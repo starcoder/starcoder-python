@@ -25,7 +25,10 @@ vars = Variables("custom.py")
 vars.AddVariables(
     ("OUTPUT_WIDTH", "", 100),
 
-    ("RANDOM_COMPONENTS", "", 10000),
+    ("RANDOM_COMPONENTS", "", 1000),
+    ("MINIMUM_CONSTANTS", "", 1),
+    ("MAXIMUM_CONSTANTS", "", 4),
+
     ("TRAIN_PROPORTION", "", 0.9),
     ("DEV_PROPORTION", "", 0.1),
     
@@ -40,29 +43,23 @@ vars.AddVariables(
     ("BATCH_SIZE", "", 32),
     ("MAX_EPOCHS", "", 10),
     ("LEARNING_RATE", "", 0.001),
+    ("RANDOM_RESTARTS", "", 0),
     ("MOMENTUM", "", None),
     ("EARLY_STOP", "", 20),
     ("PATIENCE", "", 10),
-    ("COLLAPSE_IDENTICAL", "", True),
+    ("COLLAPSE_IDENTICAL", "", False),
     ("CLUSTER_REDUCTION", "", 0.9),
     BoolVariable("USE_GPU", "", False),
     BoolVariable("USE_GRID", "", False),
     ("GPU_PREAMBLE", "", "module load cuda90/toolkit"),
-    ("GRID_LABEL", "", "gea"),
-    ("GRID_CPU_QUEUE", "", "all.q"),
-    ("GRID_CPU_RESOURCES", "", ["h_rt=100:0:0"]),
-    ("GRID_RESOURCES", "", ["h_rt=100:0:0"]),
-    ("GRID_GPU_QUEUE", "", "gpu.q@@1080"),
-    ("GRID_GPU_RESOURCES", "", ["h_rt=100:0:0", "gpu=1"]),
-
-    ("DEFAULT_TRAIN_CONFIG", "", {"DEPTH" : [2],
-                                  "EMBEDDING_SIZE" : [256],
-                                  "HIDDEN_SIZE" : [256],
-                                  "AUTOENCODER_SHAPES" : [(512,)],
+    ("DEFAULT_TRAIN_CONFIG", "", {"DEPTH" : [0],
+                                  "EMBEDDING_SIZE" : [32],
+                                  "HIDDEN_SIZE" : [32],
+                                  "AUTOENCODER_SHAPES" : [(128,)],
                               }),
     ("DEFAULT_APPLY_CONFIG", "", {}),
-    ("DEFAULT_SPLIT_PROPORTIONS", "", [("train", 0.8), ("dev", 0.1), ("test", 0.1)]),
-    ("EXPERIMENTS", "", {}),
+    ("DEFAULT_SPLIT_PROPORTIONS", "", [("train", 0.50), ("dev", 0.25), ("test", 0.25)]),
+    ("EXPERIMENTS", "", {"arithmetic" : {"SCHEMA" : "schemas/arithmetic.json"}}),    
 )
 
 
@@ -75,16 +72,9 @@ env = Environment(variables=vars, ENV=os.environ, TARFLAGS="-c -z", TARSUFFIX=".
                   tools=["default", steamroller.generate])
 
 
-#gpu_preamble = [env["GPU_PREAMBLE"] if env["USE_GPU"] else []]
-#model_queue = env["GRID_GPU_QUEUE"] if env["USE_GPU"] else env["GRID_CPU_QUEUE"]
-#model_resources = env["GRID_GPU_RESOURCES"] if env["USE_GPU"] else env["GRID_CPU_RESOURCES"]
-#if env["USE_GRID"]:
-#    from steamroller.scons import GridBuilder as Builder
-
-
-env.Append(BUILDERS={"PreprocessRandom" : env.Builder(**env.ActionMaker("python",
-                                                                 "src/preprocess_random.py",
-                                                                        "--output ${TARGETS[0]} --components ${RANDOM_COMPONENTS}")),
+env.Append(BUILDERS={"PreprocessArithmetic" : env.Builder(**env.ActionMaker("python",
+                                                                            "src/preprocess_arithmetic.py",
+                                                                            "--output ${TARGETS[0]} --components ${RANDOM_COMPONENTS} --minimum_constants ${MINIMUM_CONSTANTS} --maximum_constants ${MAXIMUM_CONSTANTS}")),
                      "PreprocessStanfordSentiment" : env.Builder(**env.ActionMaker("python",
                                                                     "src/preprocess_stanford_sentiment.py",
                                                                     "--train ${SOURCES[0]} --dev ${SOURCES[1]} --test ${SOURCES[2]} --output ${TARGETS[0]}")),
@@ -118,14 +108,14 @@ env.Append(BUILDERS={"PreprocessRandom" : env.Builder(**env.ActionMaker("python"
                                                                      other_deps=["src/data.py"])),
                      "TrainModel" : env.Builder(**env.ActionMaker("python",
                                                            "src/train_model.py",
-                                                           "--data ${SOURCES[0]} --train ${SOURCES[1]} --dev ${SOURCES[2]} --model_output ${TARGETS[0]} --trace_output ${TARGETS[1]} ${'--gpu' if USE_GPU else ''} ${'--autoencoder_shapes ' + ' '.join(map(str, AUTOENCODER_SHAPES)) if AUTOENCODER_SHAPES != None else ''} ${'--mask ' + ' '.join(MASK) if MASK else ''} --log_level ${LOG_LEVEL} ${'--autoencoder' if AUTOENCODER else ''}",
+                                                           "--data ${SOURCES[0]} --train ${SOURCES[1]} --dev ${SOURCES[2]} --model_output ${TARGETS[0]} --trace_output ${TARGETS[1]} ${'--gpu' if USE_GPU else ''} ${'--autoencoder_shapes ' + ' '.join(map(str, AUTOENCODER_SHAPES)) if AUTOENCODER_SHAPES != None else ''} ${'--mask ' + ' '.join(MASK) if MASK else ''} --log_level ${LOG_LEVEL} ${'--autoencoder' if AUTOENCODER else ''} --random_restarts ${RANDOM_RESTARTS}",
                                                            other_deps=["src/models.py", "src/data.py", "src/utils.py"],
                                                            other_args=["DEPTH", "MAX_EPOCHS", "LEARNING_RATE", "RANDOM_SEED", "PATIENCE", "MOMENTUM", "BATCH_SIZE",
                                                                        "EMBEDDING_SIZE", "HIDDEN_SIZE", "FIELD_DROPOUT", "HIDDEN_DROPOUT", "EARLY_STOP"],
                                                            )),# GRID_QUEUE=model_queue, GRID_RESOURCES=model_resources),
                      "ApplyModel" : env.Builder(**env.ActionMaker("python",
                                                            "src/apply_model.py",
-                                                           "--model ${SOURCES[0]} --data ${SOURCES[1]} ${'--split ' + SOURCES[2].rstr() if len(SOURCES) == 3 else ''} --output ${TARGETS[0]} ${'--gpu' if USE_GPU else ''} --masked ${MASKED}",
+                                                            "--model ${SOURCES[0]} --data ${SOURCES[1]} ${'--split ' + SOURCES[2].rstr() if len(SOURCES) == 3 else ''} --output ${TARGETS[0]} ${'--gpu' if USE_GPU else ''}", # --masked ${MASKED}",
                                                            other_args=["BATCH_SIZE"],
                                                            other_deps=["src/data.py", "src/models.py"],
                                                            )), #GRID_QUEUE=model_queue, GRID_RESOURCES=model_resources),
@@ -134,10 +124,10 @@ env.Append(BUILDERS={"PreprocessRandom" : env.Builder(**env.ActionMaker("python"
                                                          "src/evaluate.py",
                                                          "--model ${SOURCES[0]} --data ${SOURCES[1]} --test ${SOURCES[2]} --output ${TARGETS[0]}",
                                                          other_deps=["src/data.py", "src/models.py"])),
-                     "EvaluateField" : env.Builder(**env.ActionMaker("python",
-                                                              "src/evaluate_field.py",
-                                                              "-i ${SOURCES[0]} -s ${SOURCES[1]} -f ${FIELD} > ${TARGETS[0]}",
-                                                              )),
+                     "EvaluateFields" : env.Builder(**env.ActionMaker("python",
+                                                                      "src/evaluate_fields.py",
+                                                                      "-i ${SOURCES[0]} -s ${SOURCES[1]} -o ${TARGETS[0]}",
+                     )),
 
                      "Cluster" : env.Builder(**env.ActionMaker("python",
                                                         "src/cluster.py",
@@ -232,12 +222,11 @@ def run_experiment(env, experiment_config, **args):
                                     [model, dataset, test],
                                     **args,
                                     **config)
-            continue
-            f1 = env.EvaluateField("work/${EXPERIMENT_NAME}/${FOLD}/score_${APPLY_CONFIG_ID}.pkl.gz",
-                                   [output, spec],
-                                   **args, **config)
 
-            results.append((f1, conf))
+            scores = env.EvaluateFields("work/${EXPERIMENT_NAME}/${FOLD}/score_${APPLY_CONFIG_ID}.csv",
+                                        [output, spec],
+                                        **args, **config)
+            results.append(scores)
     #return env.CollateResults("work/${EXPERIMENT_NAME}/scores.txt.gz", results, **args, **config)
     return None
 

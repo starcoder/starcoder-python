@@ -3,7 +3,7 @@ import pickle
 import logging
 import argparse
 import torch
-from data import Dataset, NumericField, DistributionField
+from data import Dataset, NumericField, DistributionField, IdField, EntityTypeField
 from models import GraphAutoencoder
 import pandas
 from utils import batchify, stack_batch, split_batch
@@ -44,7 +44,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", dest="batch_size", default=128, type=int, help="")
     parser.add_argument("--log_level", dest="log_level", default="INFO", 
                         choices=["ERROR", "WARNING", "INFO", "DEBUG"], help="Logging level")
-    parser.add_argument("--masked", dest="masked", nargs="*", default=[], help="Fields to mask")
+    #parser.add_argument("--masked", dest="masked", nargs="*", default=[], help="Fields to mask")
     args = parser.parse_args()
     
     logging.basicConfig(level=getattr(logging, args.log_level))
@@ -54,7 +54,7 @@ if __name__ == "__main__":
 
     with gzip.open(args.data, "rb") as ifd:
         data = pickle.load(ifd)
-
+    
     model = GraphAutoencoder(spec, 
                              margs.depth, 
                              margs.autoencoder_shapes, 
@@ -65,7 +65,8 @@ if __name__ == "__main__":
                              margs.hidden_dropout, 
                              margs.autoencoder)
     model.load_state_dict(state)
-
+    model.eval()
+    
     if args.gpu:
         model.cuda()
         logging.info("CUDA memory allocated/cached: %.3fg/%.3fg", 
@@ -78,24 +79,25 @@ if __name__ == "__main__":
     else:
         with gzip.open(args.split, "rb") as ifd:            
             components = pickle.load(ifd)
-
+            data = data.subselect(components)
+            
     outputs = []
     for i, (entities, adjacencies) in enumerate(batchify(data, args.batch_size, subselect=False)):
         if args.gpu:
-            tentities = {k : v.cuda() for k, v in entities.items()}
+            entities = {k : v.cuda() for k, v in entities.items()}
             adjacencies = {k : v.cuda() for k, v in adjacencies.items()}
         #mask = tentities["fluency_languages"].sum(1).nonzero().flatten()
         #for i in mask:
         #    for field in tentities.keys():
         #        if field in args.masked:
         #            tentities[field][i] = 0
-        reconstructions, bottlenecks = model(tentities, adjacencies)
-        reconstructions = {k : (v if isinstance(spec.field_object(k), (DistributionField, NumericField))
-                                else torch.argmax(v, -1, False)) for k, v in reconstructions.items()}
+        reconstructions, bottlenecks = model(entities, adjacencies)
+        reconstructions = {k : (v if isinstance(spec.field_object(k), (DistributionField, NumericField, IdField, EntityTypeField))
+                                else torch.argmax(v, -1, False)) for k, v in reconstructions.items()}        
         outputs.append(({k : v.clone().detach().cpu() for k, v in entities.items()}, 
                         {k : v.clone().detach().cpu() for k, v in reconstructions.items()}, 
                         {k : v.clone().detach().cpu() for k, v in adjacencies.items()}, 
-                        bottlenecks.cpu()))
+                        bottlenecks))
 
     with gzip.open(args.output, "wb") as ofd:
         pickle.dump(outputs, ofd)

@@ -9,13 +9,14 @@ import logging
 import warnings
 import numpy
 from torch.optim import Adam, SGD
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+#from torch.optim.lr_scheduler import ReduceLROnPlateau
 import torch
 from models import GraphAutoencoder, field_models
 from data import Dataset
 from evaluate import fieldwise
-from utils import batchify, stack_batch, split_batch, compute_losses, run_epoch
-
+from utils import batchify, stack_batch, split_batch, compute_losses, run_epoch, Scheduler
+from torch.autograd import set_detect_anomaly
+set_detect_anomaly(True)
 
 warnings.filterwarnings("ignore")
 
@@ -47,6 +48,7 @@ if __name__ == "__main__":
     parser.add_argument("--learning_rate", dest="learning_rate", type=float, default=0.001, help="Learning rate")
     parser.add_argument("--momentum", dest="momentum", type=float, default=None, help="Momentum for SGD (default: Adam)")
     parser.add_argument("--gpu", dest="gpu", default=False, action="store_true", help="Use GPU")
+    parser.add_argument("--random_restarts", dest="random_restarts", default=0, type=int, help="Number of random restarts to perform")
     
     # output-related
     parser.add_argument("--model_output", dest="model_output", help="Model output file")
@@ -79,72 +81,100 @@ if __name__ == "__main__":
     with gzip.open(args.dev, "rb") as ifd:
         dev_indices = pickle.load(ifd)
 
-    train_data = data.subselect(train_indices)
-    dev_data = data.subselect(dev_indices)
+    train_data = data.subselect_components(train_indices)
+    dev_data = data.subselect_components(dev_indices)
 
-    model = GraphAutoencoder(data._spec, args.depth, args.autoencoder_shapes, args.embedding_size, args.hidden_size, args.mask, args.field_dropout, args.hidden_dropout, args.autoencoder)
-
-    if args.gpu:
-        model.cuda()
-        logging.info("CUDA memory allocated/cached: %.3fg/%.3fg", 
-                     torch.cuda.memory_allocated() / 1000000000, torch.cuda.memory_cached() / 1000000000)
-        
-    logging.debug("Model: %s", model)
-    model.init_weights()
+    global_best_dev_loss = torch.tensor(numpy.nan)
+    global_best_state = None
+    traces = []
     
-    if args.momentum != None:
-       logging.info("Using SGD with momentum")
-       optim = SGD(model.parameters(), lr=args.learning_rate, momentum=args.momentum)
-    else:
-       logging.info("Using Adam")        
-       optim = Adam(model.parameters(), lr=args.learning_rate)
-    sched = ReduceLROnPlateau(optim, patience=args.patience, verbose=True) if args.patience != None else None
+    for restart in range(args.random_restarts + 1):
 
-    logging.info("Training StarCoder with %d/%d train/dev entities with %d entities/batch", 
-                 len(train_indices), 
-                 len(dev_indices), 
-                 args.batch_size)
+        local_best_dev_loss = torch.tensor(numpy.nan)
+        local_best_state = None
+        
+        model = GraphAutoencoder(data._spec, args.depth, args.autoencoder_shapes, args.embedding_size, args.hidden_size, args.mask, args.field_dropout, args.hidden_dropout, args.autoencoder)
 
-    best_dev_loss = torch.tensor(numpy.nan)
-    best_state = None
-    since_improvement = 0
-    trace = []
+        if args.gpu:
+            model.cuda()
+            logging.info("CUDA memory allocated/cached: %.3fg/%.3fg", 
+                         torch.cuda.memory_allocated() / 1000000000, torch.cuda.memory_cached() / 1000000000)
 
-    def policy(losses_by_field):
-        return sum([x.sum() for x in losses_by_field.values()])
+        logging.info("Model: %s", model)
+        model.init_weights()
 
-    for e in range(1, args.max_epochs + 1):
+        if args.momentum != None:
+           logging.info("Using SGD with momentum")
+           optim = SGD(model.parameters(), lr=args.learning_rate, momentum=args.momentum)
+        else:
+           logging.info("Using Adam")        
+           optim = Adam(model.parameters(), lr=args.learning_rate)
+        sched = Scheduler(args.early_stop, optim, patience=args.patience, verbose=True) if args.patience != None else None
 
-        train_loss, train_loss_by_field, dev_loss, dev_loss_by_field = run_epoch(model,
-                                                                                 field_models,
-                                                                                 optim,
-                                                                                 policy,
-                                                                                 train_data,
-                                                                                 dev_data,
-                                                                                 #train_components, 
-                                                                                 #dev_components, 
-                                                                                 args.batch_size, 
-                                                                                 args.gpu)
+        logging.info("Training StarCoder with %d/%d train/dev entities with %d entities/batch", 
+                     len(train_indices), 
+                     len(dev_indices), 
+                     args.batch_size)
 
-        trace.append((train_loss, train_loss_by_field, dev_loss, dev_loss_by_field))
+        trace = []
 
-        if sched != None:
-            sched.step(dev_loss)            
+        def policy(losses_by_field):
+            loss_by_field = {k : v.sum() for k, v in losses_by_field.items()}
+            retval = sum(loss_by_field.values())
+            return retval
 
-        logging.info("Epoch %d (%d since improvement): train/dev loss = %.4f/%.4f", e, since_improvement, train_loss, dev_loss)
+        for e in range(1, args.max_epochs + 1):
 
-        since_improvement += 1
-        if torch.isnan(best_dev_loss) or best_dev_loss > dev_loss:
-            logging.info("New best dev loss: %.3f", dev_loss)
-            best_dev_loss = dev_loss
-            best_state = {k : v.clone().detach().cpu() for k, v in model.state_dict().items()}
-            since_improvement = 0
-        if args.early_stop != None and since_improvement >= args.early_stop:
-            logging.info("Stopping early after no improvement for %d epochs", args.early_stop)
-            break
+            train_loss, train_loss_by_field, dev_loss, dev_loss_by_field = run_epoch(model,
+                                                                                     field_models,
+                                                                                     optim,
+                                                                                     policy,
+                                                                                     train_data,
+                                                                                     dev_data,
+                                                                                     args.batch_size, 
+                                                                                     args.gpu)
 
+            trace.append((train_loss, train_loss_by_field, dev_loss, dev_loss_by_field))
+            
+            logging.info("Random start %d, Epoch %d: (comparably-scaled) train/dev loss = %.4f/%.4f",
+                         restart + 1,
+                         e,
+                         len(dev_data) * (train_loss / len(train_data)),
+                         dev_loss,
+            )
+
+            reduce_rate, early_stop, new_best = sched.step(dev_loss)
+            if new_best:
+                logging.info("New best dev loss: %.3f", dev_loss)
+                local_best_dev_loss = dev_loss
+                local_best_state = {k : v.clone().detach().cpu() for k, v in model.state_dict().items()}
+
+            if reduce_rate == True:
+                model.load_state_dict(local_best_state)
+            if early_stop == True:
+                logging.info("Stopping early after no improvement for %d epochs", args.early_stop)
+                if torch.isnan(global_best_dev_loss) or local_best_dev_loss < global_best_dev_loss:
+                    gbd = "inf" if torch.isnan(global_best_dev_loss) else global_best_dev_loss / len(dev_data)
+                    logging.info("Random run #{}'s loss is current best ({:.4} < {:.4})".format(restart + 1, local_best_dev_loss / len(dev_data), gbd))
+                    global_best_dev_loss = local_best_dev_loss
+                    global_best_state = local_best_state
+                    traces.append(trace)
+                break
+            elif e == args.max_epochs:
+                logging.info("Stopping after reaching maximum epochs")
+                if torch.isnan(global_best_dev_loss) or local_best_dev_loss < global_best_dev_loss:
+                    gbd = "inf" if torch.isnan(global_best_dev_loss) else global_best_dev_loss / len(dev_data)
+                    logging.info("Random run #{}'s loss is current best ({:.4} < {:.4})".format(restart + 1, local_best_dev_loss / len(dev_data), gbd))
+                    global_best_dev_loss = local_best_dev_loss
+                    global_best_state = local_best_state
+                    traces.append(trace)
+            # model.load_state_dict model.eval model.to(device)
+
+    logging.info("Final dev loss of {:.4}".format(global_best_dev_loss / len(dev_data)))
+
+    # torch.save(model, args.model_output)
     with gzip.open(args.model_output, "wb") as ofd:
-        torch.save((best_state, args, data._spec), ofd)
+        torch.save((global_best_state, args, data._spec), ofd)
 
     with gzip.open(args.trace_output, "wb") as ofd:
-        torch.save((trace, args), ofd)
+        torch.save((traces, args), ofd)

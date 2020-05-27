@@ -1,0 +1,29 @@
+{
+    "entity_type" : {
+        "type" : "entity_type"
+    },
+    "id" : {
+        "type" : "id"
+    }, 
+    "name" : {
+        "type" : "categorical"
+    },
+    "value" : {
+        "type" : "numeric"
+    },
+    "unary_arg_for" : {
+        "type" : "relation",
+        "source_entity_type" : "node",
+        "target_entity_type" : "node"
+    },
+    "left_arg_for" : {
+        "type" : "relation",
+        "source_entity_type" : "node",
+        "target_entity_type" : "node"
+    },
+    "right_arg_for" : {
+        "type" : "relation",
+        "source_entity_type" : "node",
+        "target_entity_type" : "node"
+    }
+}

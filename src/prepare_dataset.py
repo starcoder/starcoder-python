@@ -65,7 +65,7 @@ if __name__ == "__main__":
     logging.info("Created %s", spec)
 
     dataset = Dataset(spec, entities.values()) #, relations)
-
+    
     with gzip.open(args.spec_output, "wb") as ofd:
         pickle.dump(spec, ofd)
     

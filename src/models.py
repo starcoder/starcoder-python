@@ -110,7 +110,8 @@ class NumericEncoder(torch.nn.Module):
     def __init__(self, field, **args):
         super(NumericEncoder, self).__init__()
     def forward(self, x):
-        return torch.as_tensor(torch.unsqueeze(x, 1), dtype=torch.float32, device=x.device)
+        retval = torch.as_tensor(torch.unsqueeze(x, 1), dtype=torch.float32, device=x.device)
+        return retval
     @property
     def input_size(self):
         return 1
@@ -125,7 +126,9 @@ class NumericDecoder(torch.nn.Module):
         super(NumericDecoder, self).__init__()
         self._linear = torch.nn.Linear(input_size, 1)
     def forward(self, x):
-        return torch.nn.functional.relu(self._linear(x)).squeeze()
+        retval = torch.nn.functional.relu(self._linear(x))
+        retval = self._linear(torch.nn.functional.relu(x))
+        return retval.squeeze()
     @property
     def input_size(self):
         return self._linear.in_features
@@ -141,7 +144,6 @@ NumericLoss = torch.nn.MSELoss
 class DistributionEncoder(torch.nn.Module):
     def __init__(self, field, **args):
         self._size = len(field._categories)
-        #print(self._size)
         super(DistributionEncoder, self).__init__()
     def forward(self, x):
         return x #torch.unsqueeze(x, 1)
@@ -339,8 +341,6 @@ class GraphAutoencoder(torch.nn.Module):
             self._summarizers = {}
             for entity_type in self._entity_type_order:
                 self._summarizers[entity_type] = {}
-                #print(entity_type, spec.entity_relations(entity_type))
-                #for name, other_type in spec.entity_relations(entity_type):
                 for name in spec.entity_relations(entity_type):
                     self._summarizers[entity_type][name] = summarizers(self._bottleneck_size)
                 self._summarizers[entity_type] = torch.nn.ModuleDict(self._summarizers[entity_type])
@@ -357,9 +357,7 @@ class GraphAutoencoder(torch.nn.Module):
             else:
                 self._projectors[entity_type] = Projector(self._boundary_sizes.get(entity_type, 0), self._projected_size)
         self._projectors = torch.nn.ModuleDict(self._projectors)
-
-
-
+        
         # a decoder for each field
         # change from per-entity-per-field to just per-field!
         # a decoder for each field
@@ -369,8 +367,6 @@ class GraphAutoencoder(torch.nn.Module):
             if field_type in field_models:
                 self._field_decoders[field_name] = field_models[field_type][1](self._spec._field_name_to_object[field_name], self._projected_size)
         self._field_decoders = torch.nn.ModuleDict(self._field_decoders)
-        #print(self._max_boundary_size, self._boundary_sizes)
-        #sys.exit()
 
         # self._field_decoders = {}
         # for entity_type in self._entity_type_order:
@@ -389,26 +385,24 @@ class GraphAutoencoder(torch.nn.Module):
         super(GraphAutoencoder, self).cuda()
         
     def forward(self, entities, adjacencies):
+        logging.debug("Starting forward pass")
+        logging.debug("Entities: %s", entities)
+        logging.debug("Adjacencies: %s", adjacencies)
+
         device = self._device
-        etf = self._spec.entity_type_field
-        num_entities = entities[etf].shape[0]
+        entity_type_field = self._spec.entity_type_field
+        num_entities = entities[entity_type_field].shape[0]
         entity_masks = {}
-        autoencoder_inputs = {}
-        #print(self._entity_type_order)
+        autoencoder_inputs = {}        
+
         for entity_type in self._entity_type_order:
-            #a = (entities[None] == self._spec.field_object(None)[entity_type])
-            #print(a)
-            #print(a.nonzero())
-            #print(a.nonzero().squeeze())
-            #print(a.nonzero().flatten())
-            idx = (entities[etf] == self._spec.field_object(etf)[entity_type]).nonzero().flatten()
-            #print(idx, entity_type)
+            idx = (entities[entity_type_field] == self._spec.field_object(entity_type_field)[entity_type]).nonzero().flatten()
             if len(idx) > 0:
                 entity_masks[entity_type] = idx
-
+        logging.debug("Constructed entity masks: %s", entity_masks)
+        
         for entity_type, entity_mask in entity_masks.items():
             autoencoder_inputs[entity_type] = []
-
             for field_name in self._entity_type_field_order[entity_type]:
                 if field_name in entities:
                     field_values = entities[field_name][entity_mask]
@@ -418,16 +412,10 @@ class GraphAutoencoder(torch.nn.Module):
                                                   self._field_encoders[field_name].output_size),
                                             device=self._device, dtype=torch.float32)
                 autoencoder_inputs[entity_type].append(encodings)
-            #print(entity_type, len(autoencoder_inputs[entity_type]))
             autoencoder_inputs[entity_type].append(torch.zeros(size=(len(entity_mask), 0), dtype=torch.float32, device=self._device))
-            #try:
             autoencoder_inputs[entity_type] = torch.cat(autoencoder_inputs[entity_type], 1)
-            #except:
-            #    print([(x.dtype, type(x)) for x in autoencoder_inputs[entity_type]])
-            #    print([(k, v.dtype) for k, v in entities.items()])
-            #    sys.exit()
-            #if len(autoencoder_inputs[entity_type]) > 0 else torch.zeros(shape=(), device=self._device)
-        #print(autoencoder_inputs)
+        logging.debug("Constructed autoencoder inputs: %s", autoencoder_inputs)
+            
         autoencoder_outputs = {}
         bottlenecks = torch.zeros(size=(num_entities, self._bottleneck_size), device=self._device) if self._bottleneck_size != None else None
         keep_bottlenecks = self._bottleneck_size != None
@@ -442,7 +430,9 @@ class GraphAutoencoder(torch.nn.Module):
             #autoencoder_outputs.masked_scatter_(output_mask, entity_outputs) #mask, h)            
             if keep_bottlenecks and self._depth > 0:
                 bottlenecks[entity_mask] = bns
+        logging.debug("Output from zero-depth autoencoder: %s", autoencoder_outputs)
 
+                
         # n-depth autoencoders
         for depth in range(1, self._depth + 1):
             for entity_type, entity_mask in entity_masks.items():
@@ -464,21 +454,22 @@ class GraphAutoencoder(torch.nn.Module):
                 entity_outputs, bns, losses = self._entity_autoencoders[entity_type][depth](autoencoder_inputs[entity_type])
                 if keep_bottlenecks:
                     bottlenecks[entity_mask] = bns
-
+            logging.debug("Output from %d-depth autoencoder: %s", depth, autoencoder_outputs)
+                    
         resized_autoencoder_outputs = {k : self._projectors[k](v) for k, v in autoencoder_outputs.items()}
 
         # reconstruct the entities by unfolding the last autoencoder output
         reconstructions = {}
         for entity_type, entity_mask in entity_masks.items():
             for field_name in self._entity_type_field_order.get(entity_type, []):
-                #print(field_name)
-                #out = self._field_decoders[entity_type][field_name](autoencoder_outputs[entity_type])
                 out = self._field_decoders[field_name](resized_autoencoder_outputs[entity_type])
                 if field_name not in reconstructions:
                     reconstructions[field_name] = torch.zeros(size=[num_entities] + list(out.shape)[1:], device=self._device)
-
+                logging.debug("Reconstructing %s: %s", field_name, out)
                 reconstructions[field_name][entity_mask] = out
-
+        reconstructions[self._spec.id_field] = entities[self._spec.id_field]
+        reconstructions[self._spec.entity_type_field] = entities[self._spec.entity_type_field]
+        logging.debug("Reconstructions: %s", reconstructions)
         return (reconstructions, bottlenecks)
 
 

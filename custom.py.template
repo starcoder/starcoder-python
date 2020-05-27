@@ -1,1 +1,54 @@
-# 
+# OUTPUT_WIDTH = 10000
+# USE_GPU = False
+# LOG_LEVEL = "INFO"
+# BATCH_SIZE = 256
+# LINE_COUNT = 100000
+# MAX_EPOCHS = 100
+# LEARNING_RATE = 0.01
+# MOMENTUM = None
+# EARLY_STOP = 20
+# PATIENCE = 10
+# MAX_SEQUENCE_LENGTH = 64
+# COLLAPSE_IDENTICAL = True
+# EXPERIMENTS = {
+#     "arithmetic" : {
+#         "SCHEMA" : "schemas/arithmetic.json",
+#     },
+#     "in_memoriam" : {
+#         "DATA_FILES" : ["data/in_memoriam.txt.gz"],
+#         "SCHEMA" : "data/in_memoriam_schema.json",
+#     },
+#     "slavery" : {
+#        "DATA_FILES" : ["data/*xlsx"],
+#        "SCHEMA" : "data/slavery_schema.json",
+#     },
+#     "stanford_sentiment" : {
+#       "DATA_FILES" : ["data/stanford_sentiment_train.txt.gz", 
+#                       "data/stanford_sentiment_dev.txt.gz", 
+#                       "data/stanford_sentiment_test.txt.gz", 
+#                   ],
+#       "SCHEMA" : "data/stanford_sentiment_schema.json",
+#     },
+#     "linguistic_lid" : {
+#         "DATA_FILES" : ["data/balanced_lid.txt.gz",
+#                         "data/language_properties.csv.gz", 
+#                     ],
+#         "SCHEMA" : "data/linguistic_lid_schema.json",
+#     },
+#     "fluency" : {
+#        "DATA_FILES" : ["data/snowflakes/*pkl.gz"],
+#        "SCHEMA" : "data/fluency_schema.json",
+#     },
+#     "women_writers" : {
+#        "DATA_FILES" : ["data/women_writers.tgz"],
+#        "SCHEMA" : "data/women_writers_schema.json",
+#     },
+#     "entertaining_america" : {
+#       "DATA_FILES" : ["data/entertaining_america.csv.gz"],
+#       "SCHEMA" : "data/entertaining_america_schema.json",
+#     },
+#     "reddit" : { # pics gifs letsplayvideos
+#        "DATA_FILES" : ["data/"],
+#        "SCHEMA" : "data/reddit_schema.json",
+#     },
+# }

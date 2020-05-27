@@ -41,26 +41,35 @@ class EntityTypeField(dict):
         return self._rlookup[v]
 
 
-
 class RelationField(object):
     name = "relation"
     def __init__(self, field_values):
-        self._source, self._target = field_values
+        self._source_type, self._target_type = field_values
     def encode(self, v):
         return v
     def decode(self, v):
         return v
 
-class IdField(object):
+
+class IdField(dict):
     name = "id"
     def __init__(self, field_values):
-        pass
+        self[None] = 0
+        for value in field_values:
+            self[value] = self.get(value, len(self))
+        self._rlookup = {v : k for k, v in self.items()}
 
+    # id_type to integer
     def encode(self, v):
-        return v
+        retval = self.setdefault(v, len(self))
+        self._rlookup[retval] = v
+        return retval
 
+    # integer to id_type
     def decode(self, v):
-        return v
+        if v not in self._rlookup:
+            raise Exception("Could not decode value '{}' (lookup={}, type={})".format(v, self._rlookup, type(v)))
+        return self._rlookup[v]
 
 
 class NumericField(object):
@@ -77,10 +86,12 @@ class NumericField(object):
         return "Numeric(min/max={}/{})".format(self._minimum, self._maximum)
 
     def encode(self, v):
-        return (0.0 if self._trivial else (v - self._minimum) / (self._maximum - self._minimum))
+        return v
+        #return (0.0 if self._trivial else (v - self._minimum) / (self._maximum - self._minimum))
 
     def decode(self, v):
-        return (self._minimum if self._trivial else (v * (self._maximum - self._minimum) + self._minimum))
+        return v
+        #return (self._minimum if self._trivial else (v * (self._maximum - self._minimum) + self._minimum))
 
 
 class DistributionField(object):
@@ -225,6 +236,7 @@ class Spec(object):
         self._field_name_to_object = {}
         self._entity_type_to_relation_types = {}
         self._id_field = None
+        self._relation_fields = set()
         for field_name, field_type in field_name_to_type.items():
             if field_type not in field_classes:
                 raise Exception("No class corresponding to field type '{}'".format(field_type))
@@ -232,13 +244,16 @@ class Spec(object):
                 self._id_field = field_name
             elif field_type == "entity_type":
                 self._entity_type_field = field_name
-            self._field_name_to_object[field_name] = field_classes[field_type](field_name_to_values.get(field_name, set()))
+            elif field_type == "relation":
+                self._relation_fields.add(field_name)
+            self._field_name_to_object[field_name] = field_classes[field_type](field_name_to_values.get(field_name))
 
     def __str__(self):
-        return "Spec(entities: {}, fields: {}, id_field: '{}', entity_type_field: '{}')".format(self.entity_types,
-                                                                                                self.field_names,
-                                                                                                self._id_field,
-                                                                                                self._entity_type_field)
+        return "Spec(entities: {}, data fields: {}, relation fields: {}, id_field: '{}', entity_type_field: '{}')".format(self.entity_types,
+                                                                                                                          self.data_field_names,
+                                                                                                                          self.relation_field_names,
+                                                                                                                          self.id_field_name,
+                                                                                                                          self._entity_type_field)
 
     def entity_relations(self, entity_type):
         return set([x for x in self.entity_fields(entity_type) if isinstance(self.field_object(x), RelationField)])
@@ -265,13 +280,25 @@ class Spec(object):
         return set([f for f in self._field_name_to_object.keys()])
 
     @property
+    def data_field_names(self):
+        return set([f for f in self._field_name_to_object.keys() if f not in self._relation_fields and f not in [self._id_field, self._entity_type_field]])
+    
+    @property
     def entity_type_field(self):
         return self._entity_type_field
+
+    @property
+    def id_field_name(self):
+        return self._id_field
 
     @property
     def id_field(self):
         return self._id_field
 
+    @property
+    def relation_field_names(self):
+        return self._relation_fields
+    
     @property
     def has_id_field(self):
         return (self._id_field != None)
@@ -291,7 +318,9 @@ class Spec(object):
     def encode(self, datum):
         retval = {}
         for k, v in datum.items():
-            if k not in self._field_name_to_object:
+            if k in self.entity_relations(datum[self.entity_type_field]):
+                retval[k] = self._field_name_to_object[self.id_field_name].encode(v)
+            elif k not in self._field_name_to_object:
                 retval[k] = v
             else:
                 retval[k] = self._field_name_to_object[k].encode(v)
@@ -299,37 +328,42 @@ class Spec(object):
 
     def decode(self, datum):
         retval = {}
+        entity_type = self._field_name_to_object[self.entity_type_field].decode(datum[self.entity_type_field])
         for k, v in datum.items():
-            if k not in self._field_name_to_object:
+            if k in self.entity_relations(entity_type):
+                retval[k] = self._field_name_to_object[self.id_field_name].decode(v)
+            elif k not in self._field_name_to_object:
                 retval[k] = v
             else:
                 try:
                     retval[k] = self._field_name_to_object[k].decode(v)
                 except:
                     raise Exception("Could not decode {} value '{}' (spec={})".format(k, v, self._field_name_to_object[k]))
+            
         return retval
 
     def decode_batch(self, batch):
         retvals = []
-        #print(batch[None].shape)
-        for i in range(len(batch[None])):
+        for i in range(len(batch[self.entity_type_field])):
             cur = {}
             for field_name, values in batch.items():
-                #print(field_name)
                 try:
                     cur[field_name] = values[i].tolist()
                 except:
                     pass
-            #print(cur)
             dec = self.decode(cur)
-            #print()
-            retvals.append({k : v for k, v in dec.items() if k in list(self.entity_fields(dec[None])) + [None]})
+            retvals.append({k : v for k, v in dec.items() if k in list(self.entity_fields(dec[self.entity_type_field])) + [None]})
         return retvals
 
     def encode_batch(self, batch):
         retval = {}
-        for i in range(len(batch[None])):
-            pass
+        fields = set()
+        for entity in batch:
+            for k in entity.keys():
+                retval[k] = retval.get(k, torch.empty(size=(len(batch),)))
+        for i, entity in enumerate(batch):
+            for k, v in self.encode(entity).items():
+                retval[k][i] = v
         return retval
 
 
@@ -380,6 +414,9 @@ class Dataset(object):
     def subselect(self, indices):
         return Dataset(self._spec, [self._entities[i] for i in indices])
 
+    def subselect_components(self, indices):
+        return Dataset(self._spec, [self._entities[j] for j in sum([self._components[i][0] for i in indices], [])])
+    
     def encode(self, item):
         return self._spec.encode(item)
 
@@ -404,6 +441,8 @@ class Dataset(object):
             components[c] = components.get(c, [])
             components[c].append(i)
         largest_component_size = 0 if len(components) == 0 else max([len(x) for x in components.values()])
+        if len(components) == 0:
+            raise Exception("The data is empty: this probably isn't what you want.  Perhaps add more instances, or adjust the train/dev/test split proportions?")
         logging.info("Found %d connected components with maximum size %d", len(components), largest_component_size)
         #sys.exit()
         self._components = []
@@ -507,44 +546,17 @@ if __name__ == "__main__":
 
     import utils
 
-    for i in range(data.num_components):
-        batch_entities, batch_adjacencies = data.component(i)
-        x = spec.field_object(None)["slave"]
-        a = len([j for j in batch_entities if j[None] == x])
-        b = (batch_adjacencies["slave_to_source"] == True).sum(1)
-        assert(a == b.sum())
-        assert(a == 1)
-        #print(a, b.sum())
-
-
-    comps = list(range(data.num_components))
-    for batch_entities, batch_adjacencies in utils.batchify(data, comps, 128, subselect=False):
-        #for i in range(data.num_components):
-        #c, a = data.component(i)
-        #print(spec.field_object(None)._rlookup) #["slave"]       
-        x = spec.field_object(None)["slave"]
-        a = batch_entities[None] == x
-        b = (batch_adjacencies["slave_to_source"] == True).sum(1)
-        #print(a.sum(), b.sum())
-        #assert(a.tolist() == b.tolist())
+    #print(type(data))
+    original = data.component(1)
+    #print(original)
     sys.exit()
-
-    import utils
-
-    #print(data)
-    #print(data[0])
-    #for entity in data.component(0)[0]:
-    #    print(data.decode(entity))
-    #print(data.component(0)[1])
-    #sys.exit()
-    for batch_entities, batch_adjacencies in utils.batchify(data, [0, 1, 2, 3], 16):
-        #print(spec.decode_batch(batch_entities))
-        continue
-        for i in range(batch_entities[None].shape[0]):
-            obj = {}
-            for k, v in batch_entities.items():
-                if v[i].sum() > 0:
-                    obj[k] = v[i].tolist()
-        #    print(data.decode(obj))
-        #print(batch_adjacencies)
-    #print(batch_entities)
+    decoded = [spec.decode(d) for d in original]
+    reencoded = [spec.encode(d) for d in decoded]
+    for c in range(data.num_components):
+        ents, adjs = data.component(c)
+        adjs = {k : torch.tensor(v.todense()) for k, v in adjs.items()}
+        #print(len(ents), {k : torch.masked_select(v, v).shape[0] for k, v in adjs.items()})
+        #print(len(data.component(c)[0]))
+    #print(original)
+    #print(decoded)
+    #print(reencoded)

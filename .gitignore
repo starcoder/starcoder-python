@@ -1,8 +1,4 @@
 venv*
-data
 *~
 *#*
-.sconsign.dblite
 *__pycache__*
-custom.py
-work

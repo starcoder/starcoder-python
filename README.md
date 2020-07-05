@@ -42,10 +42,17 @@ while the list of entities might be:
 
 StarCoder uses this format directly, but also includes adapters for common formats, particularly tabular (CSV) data.
 
+## Representational conventions
+
+In all cases, tensor dimensions are ordered by increasing specificity.  Admittedly this is somewhat vague and interpretive, but a few concrete examples:
+
+1.  The first dimension *always* indexes the batch
+2.  If the field type is grid-like (sequence, image, etc), dimensions that indicate the location always *immediately follow* the batch: for example, a sequence of word-embeddings will have shape `(BATCH_SIZE x SEQUENCE_LENGTH x EMBEDDING_SIZE)`, an RGB image will have shape `(BATCH_SIZE x WIDTH x HEIGHT x 3)`, etc.
+
+
+As the image example shows, somewhat-arbitrary choices are needed (`HEIGHT` could have preceded `WIDTH`), and these will be documented as they arise and new field types are defined.  *It is very likely that StarCoder will switch to named tensor dimensions and this will become moot.*
+
 ## Next steps
 
-The code is currently arranged more as a framework for experiments than a proper library, but a major push for the latter is underway.  Other specific goals are:
+See [the todo list](TODO.md) for work that is planned or under-way.
 
-1.  Compliance with [JSON-LD](https://json-ld.org/)
-2.  Encoder-decoder pairs for other modalities (image, audio, video)
-3.  Additional end-to-end examples and broader test-coverage

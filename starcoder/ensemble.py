@@ -169,7 +169,7 @@ class GraphAutoencoder(torch.nn.Module):
         rev_adjacencies = {k : v.T for k, v in adjacencies.items()}
         
         logger.debug("Assembling entity, field, and (entity, field) indices")        
-        index_space = torch.arange(0, entities[self.schema.entity_type_field.name].shape[0], 1)
+        index_space = torch.arange(0, entities[self.schema.entity_type_field.name].shape[0], 1, device=self.device)
         for field in self.schema.data_fields.values():
             # FIXME: hack for RNNs            
             if field.type_name== "sequential":
@@ -179,7 +179,7 @@ class GraphAutoencoder(torch.nn.Module):
             field_indices[field.name] = index_space.masked_select(field_masks[field.name])
             
         for entity_type in self.schema.entity_types.values():
-            entity_masks[entity_type.name] = torch.tensor((entities[self.schema.entity_type_field.name] == entity_type.name))
+            entity_masks[entity_type.name] = torch.tensor((entities[self.schema.entity_type_field.name] == entity_type.name), device=self.device)
             entity_indices[entity_type.name] = index_space.masked_select(entity_masks[entity_type.name])
             for field_name in entity_type.data_fields:
                 entity_field_masks[(entity_type.name, field_name)] = entity_masks[entity_type.name] & field_masks[field_name]
@@ -195,7 +195,7 @@ class GraphAutoencoder(torch.nn.Module):
             indices = field_indices[field.name]
             if len(indices) > 0:
                 field_values = torch.index_select(entities[field.name], 0, indices)
-                field_encodings[field.name][indices] = self.field_encoders[field.name](field_values)
+                field_encodings[field.name][indices] = self.field_encoders[field.name](field_values).to(device=self.device)
 
         logger.debug("Constructing entity-autoencoder inputs by concatenating field encodings")
         autoencoder_inputs = {}
@@ -276,14 +276,16 @@ class GraphAutoencoder(torch.nn.Module):
             resized_autoencoder_outputs = {k : self._projectors[k](v) for k, v in autoencoder_outputs.items()}
         else:
             resized_autoencoder_outputs = {k : v for k, v in autoencoder_outputs.items()}
-            
+        
+        # bug here for shared fields
         logger.debug("Reconstructing the input by applying decoders to the autoencoder output")
         reconstructions = {}
         for entity_type in self.schema.entity_types.values():    
             for field_name in entity_type.data_fields:
                 out = self._field_decoders[field_name](resized_autoencoder_outputs[entity_type.name])
                 if field_name not in reconstructions:
-                    reconstructions[field_name] = torch.zeros(size=[num_entities] + list(out.shape)[1:], device=self.device)
+                    sh = [num_entities] + list(out.shape)[1:]
+                    reconstructions[field_name] = torch.zeros(size=sh, device=self.device)
                 reconstructions[field_name][entity_masks[entity_type.name]] = out
         reconstructions[self.schema.id_field.name] = entities[self.schema.id_field.name]
         reconstructions[self.schema.entity_type_field.name] = entities[self.schema.entity_type_field.name]

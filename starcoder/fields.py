@@ -1,3 +1,4 @@
+import numpy
 import math
 import time
 import calendar
@@ -23,17 +24,18 @@ representation.
     def __init__(self, name, **args):
         self.name = name
         self.type_name = args["type"]
+        self.empty = True
     def __str__(self):
         return "{1} field: {0}".format(self.name, self.type_name)
     def encode(self, v):
         return v
-        #raise NotImplementedError()
     def decode(self, v):
         return v
-        #raise NotImplementedError()        
-    def observe_value(self, v):
+    def observe_value(self, v):        
+        self.empty = False
+        return self._observe_value(v)
+    def _observe_value(self, v):
         return v
-        #raise NotImplementedError()
     
 class MetaField(Field):
     def __init__(self, name, **args):
@@ -42,7 +44,7 @@ class MetaField(Field):
         return v
     def decode(self, v):
         return v
-    def observe_value(self, v):
+    def _observe_value(self, v):
         pass
         
 class DataField(Field):        
@@ -64,22 +66,38 @@ class RelationField(MetaField):
 class IdField(MetaField):
     def __init__(self, name, **args):
         super(IdField, self).__init__(name, type="id", **args)
-        
+
 class NumericField(DataField):
     encoded_type = torch.float32
     missing_value = float("nan")
     def __init__(self, name, **args):
         super(NumericField, self).__init__(name, **args)
-    def observe_value(self, v):
+        self.max_val = None
+        self.min_val = None
+    def _observe_value(self, v):        
         try:
-            return float(v)
+            retval = float(v)
+            self.max_val = retval if self.max_val == None else max(self.max_val, v)
+            self.min_val = retval if self.min_val == None else min(self.min_val, v)
+            return float(retval)
         except Exception as e:
             logger.error("Could not interpret '%s' for NumericField '%s'", v, self.name)
             raise e
-        
+    def decode(self, v):
+        if isinstance(v, torch.Tensor):
+            v = v.item()
+        return (None if numpy.isnan(v) else v)
+    def __str__(self):
+        return "{1} field: {0}[{2}, {3}]".format(self.name, self.type_name, self.min_val, self.max_val)
+    
 class IntegerField(DataField):    
     def __init__(self, name, **args):
         super(IntegerField, self).__init__(name, **args)
+
+    def __decode__(self, v):
+        if isinstance(v, torch.Tensor):
+            v = v.item()
+        return v
         
 class DateField(DataField):
     def __init__(self, name, **args):
@@ -103,13 +121,10 @@ class DistributionField(DataField):
         
     def encode(self, v):
         total = sum(v.values())
-        #print(v, total)
         return [0.0 if c not in v else (v[c] / total) for c in self.categories]
 
     def decode(self, v):
-        #assert(len(v) == len(self.categories))
         retval = {}
-        #print(sum([math.exp(x) for x in v]))
         if all([x >= 0 for x in v]):
             total = sum([x for x in v])
             for k, p in zip(self.categories, v):
@@ -117,14 +132,13 @@ class DistributionField(DataField):
                     retval[k] = p / total
         elif all([x <= 0 for x in v]):            
             total = sum([math.exp(x) for x in v])
-            #print(total)
             for k, p in zip(self.categories, v):
                 retval[k] = math.exp(p) / total            
         else:
             raise Exception("Got probabilities that were not all of the same sign!")
         return retval
     
-    def observe_value(self, v):
+    def _observe_value(self, v):
         for k, v in v.items():
             if k not in self.categories:
                 self.categories.append(k)
@@ -137,7 +151,7 @@ class CategoricalField(DataField):
         self._lookup = {Missing() : self.missing_value}
         self._rlookup = {self.missing_value : Missing()}
          
-    def observe_value(self, v):
+    def _observe_value(self, v):
         i = self._lookup.setdefault(v, len(self._lookup))
         self._rlookup[i] = v
    
@@ -145,6 +159,11 @@ class CategoricalField(DataField):
         return self._lookup.get(v, None) #self.unknown_value)
 
     def decode(self, v):
+        if isinstance(v, torch.Tensor):
+            if v.dtype == torch.int64:
+                v = v.item()
+            else:
+                v = v.argmax().item()                
         if v not in self._rlookup:
             raise Exception("Could not decode value '{0}' (type={2})".format(v, self._rlookup, type(v)))
         return self._rlookup[v]
@@ -182,7 +201,7 @@ class SequentialField(DataField):
     #    return "Sequential(unique_elems={}, unique_seqs={}, max_length={})".format(len(self),
     #                                                                               self._unique_sequence_count, 
     #                                                                               self._max_length)
-    def observe_value(self, vs):
+    def _observe_value(self, vs):
         for v in vs:
             i = self._lookup.setdefault(v, len(self._lookup))
             self._rlookup[i] = v
@@ -193,7 +212,6 @@ class SequentialField(DataField):
 
     def encode(self, v):
         retval = [self._lookup[e] for e in v]
-        #print(retval)
         return retval
 
     def decode(self, v):
@@ -205,69 +223,54 @@ class SequentialField(DataField):
     def __len__(self):
         return len(self._lookup)
 
-class WordField(DataField):
-    missing_value = ()
-    
+# class WordField(DataField):
+#     missing_value = ()    
+#     encoded_type = int
+#     def __init__(self, name, **args):
+#         super(WordField, self).__init__(name, **args)
+#         self._lookup = {None : 0}
+#         self._rlookup = {0 : None}
+#         self.max_length = 0
+#     def observe_value(self, vs):
+#         for v in vs:
+#             i = self._lookup.setdefault(v, len(self._lookup))
+#             self._rlookup[i] = v
+#         self.max_length = max(len(vs), self.max_length)
+#     def __str__(self):
+#         return "{1} field: {0}[{2} values, {3} max length]".format(self.name, self.type_name, len(self._lookup), self.max_length)
+#     def encode(self, v):
+#         retval = [self._lookup[e] for e in v[0:10]]
+#         return retval
+#     def decode(self, v):
+#         try:
+#             return "".join([self._rlookup[e] for e in v if e not in [Missing.value, Unknown.value]])
+#         except:
+#             raise Exception("Could not decode values '{0}' (type={2})".format(v, self._rlookup, type(v[0])))
+#     def __len__(self):
+#         return len(self._lookup)
+
+class CharacterField(DataField):
+    missing_value = ()    
     encoded_type = int
     def __init__(self, name, **args):
-        super(WordField, self).__init__(name, **args)
+        super(CharacterField, self).__init__(name, **args)
         self._lookup = {None : 0}
         self._rlookup = {0 : None}
-        self.max_length = 0
-        #unique_sequences = set()
-        #self[Missing] = Missing.value
-        #self[Unknown] = Unknown.value
-        #self._max_length = 0
-        #for value in field_values:
-        #    unique_sequences.add(value)
-        #    self._max_length = max(self._max_length, len(value))
-        #    for element in value:
-        #        self[element] = self.get(element, len(self))
-        #self._rlookup = {v : k for k, v in self.items()}
-        #self._unique_sequence_count = len(unique_sequences)
-
-    #def __str__(self):
-    #    return "Sequential(unique_elems={}, unique_seqs={}, max_length={})".format(len(self),
-    #                                                                               self._unique_sequence_count, 
-    #                                                                               self._max_length)
-    def observe_value(self, vs):
-        #words = vs.split()
-        for v in vs: #words:
+        self.max_observed_length = 0
+    def _observe_value(self, vs):
+        for v in vs:
             i = self._lookup.setdefault(v, len(self._lookup))
             self._rlookup[i] = v
-        self.max_length = max(len(vs), self.max_length)
-            
+        self.max_observed_length = max(len(vs), self.max_observed_length)
     def __str__(self):
-        return "{1} field: {0}[{2} values, {3} max length]".format(self.name, self.type_name, len(self._lookup), self.max_length)
-
+        return "{1} field: {0}[{2} values, {3} max length]".format(self.name, self.type_name, len(self._lookup), self.max_observed_length)
     def encode(self, v):
-        
-        retval = [self._lookup[e] for e in v[0:10]]
-            #retval = [self._lookup[e] for e in v.split()][0:10]
-        #print(retval)
+        retval = [self._lookup[e] for e in v]
         return retval
-
     def decode(self, v):
         try:
             return "".join([self._rlookup[e] for e in v if e not in [Missing.value, Unknown.value]])
         except:
             raise Exception("Could not decode values '{0}' (type={2})".format(v, self._rlookup, type(v[0])))
-
     def __len__(self):
         return len(self._lookup)
-
-
-    
-# field_classes = {"numeric" : NumericField,
-#                  "categorical" : CategoricalField,
-#                  "boolean" : CategoricalField,                 
-#                  "sequential" : SequentialField,
-#                  "integer" : IntegerField,
-#                  "keyword" : CategoricalField,
-#                  "text" : WordField,
-#                  "relation" : RelationField,
-#                  "distribution" : DistributionField,
-#                  "date" : DateField,
-#                  "id" : IdField,
-#                  "entity_type" : EntityTypeField,
-#              }

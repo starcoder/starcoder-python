@@ -25,8 +25,9 @@ class Dataset(object):
     graph structure, particularly those that require connected components.
     A Dataset is, basically, a Schema and a list of JSON objects.
     """
-    def __init__(self, schema, entities):
+    def __init__(self, schema, entities, strict=False):
         self.schema = schema
+        known_fields = schema.all_fields
         self._entities = []
         self._entity_fields = {}
         self.id_to_index = {}
@@ -37,8 +38,10 @@ class Dataset(object):
             #assert (entity_id not in self._id_to_index), "The id field ('{}') must be unique".format(self._spec.id_field)
             self.id_to_index[entity[self.schema.id_field.name]] = idx
             self.index_to_id[idx] = entity[self.schema.id_field.name]
-            #self._entity_fields[entity_type] = self._spec.entity_fields(entity_type) #
-            self._entities.append(DecodedEntity(entity))
+            for k in entity.keys():
+                if k not in known_fields:
+                    raise Exception("Unknown field: '{}'".format(k))
+            self._entities.append(DecodedEntity(entity))            
         self._edges = {}
         for entity in self._entities:
             entity_type = entity[self.schema.entity_type_field.name]

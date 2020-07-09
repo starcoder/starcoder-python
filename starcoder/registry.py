@@ -1,20 +1,22 @@
-from starcoder.fields import NumericField, DistributionField, CategoricalField, SequentialField, IntegerField, WordField, RelationField, DateField, IdField, EntityTypeField
+from starcoder.fields import NumericField, DistributionField, CategoricalField, SequentialField, IntegerField, RelationField, DateField, IdField, EntityTypeField
 
 from starcoder.models import NumericEncoder, NumericDecoder, NumericLoss, DistributionEncoder, DistributionDecoder, DistributionLoss, CategoricalEncoder, CategoricalDecoder, CategoricalLoss, SequentialEncoder, SequentialDecoder, SequentialLoss
 
 from starcoder.schedulers import Scheduler
 from starcoder import batchifiers
 from starcoder import splitters
+from starcoder import fields
 # import RandomEntities, RandomComponents, DuplicateEntityTypes
 
 field_model_classes = {
-    NumericField : (NumericEncoder, NumericDecoder, NumericLoss(reduction="none")),
-    DistributionField : (DistributionEncoder, DistributionDecoder, DistributionLoss(reduction="none")),    
-    IntegerField : (NumericEncoder, NumericDecoder, NumericLoss(reduction="none")),
-    CategoricalField : (CategoricalEncoder, CategoricalDecoder, CategoricalLoss(reduction="none")),
-    SequentialField : (SequentialEncoder, SequentialDecoder, SequentialLoss(reduction="none")),
-    WordField : (SequentialEncoder, SequentialDecoder, SequentialLoss(reduction="none")),
-    DateField : (NumericEncoder, NumericDecoder, NumericLoss(reduction="none")),
+    NumericField : (NumericEncoder, NumericDecoder, NumericLoss),
+    DistributionField : (DistributionEncoder, DistributionDecoder, DistributionLoss),
+    IntegerField : (NumericEncoder, NumericDecoder, NumericLoss),
+    CategoricalField : (CategoricalEncoder, CategoricalDecoder, CategoricalLoss),
+    SequentialField : (SequentialEncoder, SequentialDecoder, SequentialLoss),
+    #WordField : (SequentialEncoder, SequentialDecoder, SequentialLoss),
+    DateField : (NumericEncoder, NumericDecoder, NumericLoss),
+    fields.CharacterField : (SequentialEncoder, SequentialDecoder, SequentialLoss),
 }
 
 summarizer_classes = {}
@@ -38,7 +40,7 @@ field_classes = {"numeric" : NumericField,
                  "sequential" : SequentialField,
                  "integer" : IntegerField,
                  "keyword" : CategoricalField,
-                 "text" : WordField,
+                 "text" : fields.CharacterField,
                  "relation" : RelationField,
                  "distribution" : DistributionField,
                  "date" : DateField,

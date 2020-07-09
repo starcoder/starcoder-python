@@ -1,4 +1,5 @@
 from starcoder.registry import field_classes
+from starcoder.fields import Missing
 import logging
 
 logger = logging.getLogger(__name__)
@@ -10,7 +11,7 @@ class EntityType(object):
         self.relation_fields = list(sorted(relation_fields))
         self.reverse_relation_fields = list(sorted(reverse_relation_fields))
     def __str__(self):
-        return "{}: data fields={}, relation fields={}".format(self.name, self.data_fields, self.relation_fields)
+        return "{}: data fields={}, relation fields={}, reverse relation fields={}".format(self.name, self.data_fields, self.relation_fields, self.reverse_relation_fields)
 
 class EncodedEntity(dict):
     def __init__(self, *argv, **argd):
@@ -69,13 +70,23 @@ constructed from in the "json" property.
     def decode(self, entity: EncodedEntity) -> DecodedEntity:
         assert isinstance(entity, EncodedEntity)
         retval = DecodedEntity({k : self.data_fields[k].decode(v) if k in self.data_fields else v for k, v in entity.items()})
+        retval = {k : v for k, v in retval.items() if not isinstance(v, Missing)}
         return retval
+
+    @property
+    def all_fields(self):
+        return list(self.data_fields.keys()) + list(self.relation_fields.keys()) + [self.id_field.name, self.entity_type_field.name]
     
     def observe_entity(self, entity):
         for k, v in entity.items():
             if k in self.data_fields:
                 self.data_fields[k].observe_value(v)
-            
+
+    def verify(self):
+        for name, field in self.data_fields.items():
+            if field.empty == True:
+                raise Exception("Field '{}' had no observed values".format(name))
+        
     def __str__(self):
         return """
 Schema(

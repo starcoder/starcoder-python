@@ -16,7 +16,7 @@ from torch.optim import Adam, SGD
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 import torch.nn.functional as F
-from starcoder.fields import NumericField, DistributionField, CategoricalField, SequentialField, IntegerField, DateField, WordField
+from starcoder.fields import NumericField, DistributionField, CategoricalField, SequentialField, IntegerField, DateField #, WordField
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +26,16 @@ class StarcoderArchitecture(torch.nn.Module):
     def __init__(self):
         super(StarcoderArchitecture, self).__init__()
 
+class Loss(torch.nn.Module):
+    def __init__(self, field):
+        super(Loss, self).__init__()
+        self.field = field
+    def __call__(self, guess, gold):
+        retval = self.compute(guess, gold)
+        assert retval.device == guess.device, self.field.name
+        return retval
+    def compute(self, guess, gold):
+        raise UnimplementedException()
 
 # (batch_count x (entity_representation_size + (bottleneck_size * relation_count)) :: Float) -> (batch_count x entity_representation_size :: Float)
 class Autoencoder(torch.nn.Module):
@@ -103,7 +113,6 @@ class CategoricalDecoder(torch.nn.Module):
     def __init__(self, field, input_size, activation, **args): #input_size):
         super(CategoricalDecoder, self).__init__()
         output_size = len(field)
-        #print(field)
         self._layerA = torch.nn.Linear(input_size, input_size * 2)
         self._layerB = torch.nn.Linear(input_size * 2, output_size)
     def forward(self, x):
@@ -119,7 +128,14 @@ class CategoricalDecoder(torch.nn.Module):
         return self._layer.out_features        
 
 
-CategoricalLoss = torch.nn.NLLLoss
+#CategoricalLoss = torch.nn.NLLLoss
+class CategoricalLoss(Loss):
+    def __init__(self, field, reduction="mean"):
+        super(CategoricalLoss, self).__init__(field)
+        self.reduction = reduction
+    def compute(self, guess, gold):
+        return torch.nn.functional.cross_entropy(guess, gold)
+
 
 
 # (batch_count :: Float) -> (batch_count :: Float)
@@ -128,6 +144,7 @@ class NumericEncoder(torch.nn.Module):
         super(NumericEncoder, self).__init__()
     def forward(self, x):
         retval = torch.as_tensor(torch.unsqueeze(x, 1), dtype=torch.float32, device=x.device)
+        #retval = torch.as_tensor(x, dtype=torch.float32, device=x.device)
         return retval
     @property
     def input_size(self):
@@ -145,8 +162,7 @@ class NumericDecoder(torch.nn.Module):
         self.activation = activation()
     def forward(self, x):
         retval = self.activation(self._linear(x))
-        #retval = self._linear(activation(x))
-        return retval.squeeze()
+        return retval
     @property
     def input_size(self):
         return self._linear.in_features
@@ -155,11 +171,14 @@ class NumericDecoder(torch.nn.Module):
         return self._linear.out_features
 
 
-class NumericLoss(object):
-    def __init__(self, reduction):
+class NumericLoss(Loss):
+    def __init__(self, field, reduction="mean"):
+        super(NumericLoss, self).__init__(field)
         self.reduction = reduction
-    def __call__(self, guess, gold):
-        selector = ~torch.isnan(gold)
+    def compute(self, guess, gold):
+        guess = guess.flatten()
+        gold = gold.flatten()
+        selector = ~torch.isnan(gold).to(device=guess.device)
         return torch.nn.functional.mse_loss(torch.masked_select(guess, selector), torch.masked_select(gold, selector), reduction=self.reduction)
 
 
@@ -170,7 +189,7 @@ class DistributionEncoder(torch.nn.Module):
         self._size = len(field.categories)
         super(DistributionEncoder, self).__init__()
     def forward(self, x):
-        return x #torch.unsqueeze(x, 1)
+        return x
     @property
     def input_size(self):
         return self._size
@@ -184,8 +203,9 @@ class DistributionDecoder(torch.nn.Module):
     def __init__(self, field, input_size, activation, **args):
         super(DistributionDecoder, self).__init__()
         self._linear = torch.nn.Linear(input_size, len(field.categories))
+        self.activation = activation()
     def forward(self, x):
-        return torch.nn.functional.log_softmax(activation(self._linear(x)).squeeze(), dim=1)
+        return torch.nn.functional.log_softmax(self.activation(self._linear(x)).squeeze(), dim=1)
     @property
     def input_size(self):
         return self._linear.in_features
@@ -194,8 +214,12 @@ class DistributionDecoder(torch.nn.Module):
         return self._linear.out_features
 
 
-DistributionLoss = torch.nn.KLDivLoss
-
+#DistributionLoss = torch.nn.KLDivLoss
+class DistributionLoss(Loss):
+    def __init__(self, field):
+        super(DistributionLoss, self).__init__(field)
+    def compute(self, guess, gold):
+        return torch.nn.functional.kl_div(guess, gold)
 
 # item_sequences -> lengths -> hidden_state
 # (batch_count x max_length :: Int) -> (batch_count :: Int) -> (batch_count x entity_representation_size :: Float)
@@ -206,7 +230,7 @@ class SequentialEncoder(torch.nn.Module):
         es = args.get("embedding_size", 32)
         hs = args.get("hidden_size", 64)
         rnn_type = args.get("rnn_type", torch.nn.GRU)
-        self.max_length = args.get("max_length", 32)
+        self.max_length = args.get("max_length", 10)
         self._embeddings = torch.nn.Embedding(num_embeddings=len(field), embedding_dim=es)
         self._rnn = rnn_type(es, hs, batch_first=True, bidirectional=False)
     def forward(self, x):
@@ -242,8 +266,7 @@ class SequentialDecoder(torch.nn.Module):
         self.field = field
         hs = args.get("hidden_size", 32)
         rnn_type = args.get("rnn_type", torch.nn.GRU)        
-        #self._max_length = field.max_length
-        self.max_length = args.get("max_length", 32)
+        self.max_length = args.get("max_length", 10)
         self._rnn = rnn_type(input_size, hs, batch_first=True, bidirectional=False)
         self._classifier = torch.nn.Linear(hs, len(field))
     def forward(self, x):
@@ -263,21 +286,16 @@ class SequentialDecoder(torch.nn.Module):
         return self._rnn.hidden_size
 
 
-class SequentialLoss(object):
-    def __init__(self, reduction):
-        self._nll = torch.nn.NLLLoss(reduction=reduction)
-    def __call__(self, x, target):
-        #print(x.shape, target.shape)
+class SequentialLoss(Loss):
+    def __init__(self, field, reduction="mean"):
+        super(SequentialLoss, self).__init__(field)
+    def compute(self, x, target):
         if target.shape[1] == 0:
-            retval = torch.zeros(size=(x.shape[0], 0))
-            retval.requires_grad = True
-            return retval
-        
-        x = x[:, 0:target.shape[1], :]
+            target = torch.zeros(size=x.shape[:-1], device=x.device, dtype=torch.long)
         losses = []
-        for v in range(target.shape[1]):
-            losses.append(self._nll(x[:, v, :], target[:, v]))
-        return torch.cat(losses)
+        for v in range(min(x.shape[1], target.shape[1])):
+            losses.append(torch.nn.functional.nll_loss(x[:, v, :], target[:, v]))
+        return sum(losses)
 
 
 # representations -> summary

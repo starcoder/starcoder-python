@@ -106,18 +106,13 @@ class SampleSnowflakes(Batchifier):
                     for depth in range(3):
                         poss = numpy.argwhere(adjs[hops[-1]].any(0) == True)[:, 1].tolist()
                         random.shuffle(poss)
-                        #print(len(poss))
                         hops.append(poss[:len(poss) // 2])
                     nonshared_entities = [other_entities.index_to_id[i] for i in set(sum(hops, []))]
-                    #print(len(nonshared_entities))
                     batch_entities += nonshared_entities #[other_entities.index_to_id[i] for i in set(sum(hops, []))]
                 batch_entities = list(set(batch_entities))[0:num_other_entities] + entities_to_duplicate
 
                 batch = data.subselect_entities_by_id(batch_entities)
                 other_entities = other_entities.subselect_entities_by_id(batch_entities, invert=True)
-                #print(len(batch_entities))
-                #print(len(other_entities))
-                
             comps = [batch.component(i) for i in range(batch.num_components)]
             retval = stack_batch(comps, data.schema)                
             yield retval

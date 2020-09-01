@@ -1,4 +1,15 @@
-# StarCoder Overview
+# StarCoder: computational intelligence for humanities scholarship
+
+StarCoder is a machine learning framework designed for researchers in fields such as History, Literary Criticism, or Classics who are interested in what cutting-edge neural models can reveal about their objects of study.  It accomplishes this by following several principles:
+
+1. **Focus on data**: the humanist need only worry about how they *represent* their material, which is a critical aspect of empirical studies, computational or otherwise.  By using [JSON-LD](https://json-ld.org) to describe [entities and their relationships](https://en.wikipedia.org/wiki/Entity%E2%80%93relationship_model), StarCoder encourages humanists to produce completely general, transparent, and explicit archives.
+2. **Minimal dependencies**: StarCoder is built from the ground up in [PyTorch](https://pytorch.org), its only dependency other than a recent version of Python.
+3. **Unsupervised**
+4. **Flexible training**
+5. **Interpretable output**
+
+At the same time, StarCoder is also designed for machine learning researchers 
+
 
 StarCoder's goal is to programmatically generate, train, and employ neural models tailored to complex data sets, thus allowing experts in other fields to remain focused on their particular domain, while benefiting from advancements in machine learning.  StarCoder models can be used for supervised and unsupervised tasks, such as classification, augmentation, cleaning, clustering, anomaly detection, and so forth.  It assumes a typed [Entity-relationship model](https://en.wikipedia.org/wiki/Entity%E2%80%93relationship_model) specified in human-readable [JSON conventions](https://json-ld.org/).  StarCoder combines graph-convolutional networks, autoencoders, and an open set of encoder-decoder pairs.  In brief, the procedure is:
 

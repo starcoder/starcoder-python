@@ -11,3 +11,4 @@
 9.  Switch Dataset reference system to be purely ID-based
 10. Add "snowflake" batchifier
 11. Interactive model server/data editor
+12. Apply models to huge graphs

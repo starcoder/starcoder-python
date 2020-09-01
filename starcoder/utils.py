@@ -1,198 +1,303 @@
-import pickle
-import re
-import gzip
-import sys
-import argparse
-import json
-import random
-import logging
-import warnings
-import numpy
+from typing import Dict, List, Any, Tuple, Generator
+from starcoder.ensemble_model import GraphAutoencoder
+from starcoder.schema import Schema
+from starcoder.dataset import Dataset
+from starcoder.entity import stack_entities, UnpackedEntity, PackedEntity, Index, ID
+from starcoder.adjacency import Adjacencies
 import torch
+import logging
+import tempfile
+import json
+import gzip
+import os
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("starcoder")
 
-warnings.filterwarnings("ignore")
+def simple_loss_policy(losses_by_field: Dict[str, List[float]]) -> float:
+    loss_by_field = {k : sum(v) for k, v in losses_by_field.items()}
+    retval = sum(loss_by_field.values())
+    return retval
+
+def compute_losses(model: GraphAutoencoder,
+                   entities: Dict[str, Any],
+                   reconstructions: Dict[str, Any],
+                   schema: Schema) -> Dict[str, torch.Tensor]:
+    """
+    Gather and return all the field losses as a nested dictionary where the first
+    level of keys are field types, and the second level are field names.
+    """
+    losses = {}
+    for entity_type_name, entity_type in schema.entity_types.items():
+        for field_name in entity_type.data_fields:
+            field_values = entities[field_name]
+            #for field_name, field_values in entities.items():
+            #if field_name in schema.data_fields and field_name in reconstructions:
+            field = schema.data_fields[field_name]
+            logger.debug("Computing losses for field %s of type %s", field.name, field.type_name)
+            reconstruction_values = reconstructions[field.name]
+            field_losses = model.field_losses[field.name](reconstruction_values, field_values)
+            mask = ~torch.isnan(field_losses)
+            losses[field.name] = torch.masked_select(field_losses, mask)
+    return losses
 
 
-class Configurable(object):
-    arguments = []
+def run_over_components(model: GraphAutoencoder,
+                        batchifier: Any,
+                        optim: Any,
+                        loss_policy: Any,
+                        data: Dataset,
+                        batch_size: int,
+                        gpu: bool,
+                        train: bool,
+                        subselect: bool=False,
+                        strict: bool=True,
+                        mask_tests: Any=[]) -> Tuple[Any, Dict[Any, Any]]:
+    old_mode = model.training
+    model.train(train)
+    loss_by_field: Dict[str, Any] = {}
+    loss = 0.0
+    for batch_num, (full_entities, full_adjacencies) in enumerate(batchifier(data, batch_size)):
+        logger.debug("Processing batch #%d", batch_num)
+        batch_loss_by_field = {}
+        if gpu:
+            full_entities = {k : v.cuda() if hasattr(v, "cuda") else v for k, v in full_entities.items()}
+            full_adjacencies = {k : v.cuda() for k, v in full_adjacencies.items()}
+        optim.zero_grad()
+        reconstructions, norm, bottlenecks = model(full_entities, full_adjacencies)
+        for field, losses in compute_losses(model, full_entities, reconstructions, data.schema).items():
+            if losses.shape[0] > 0:
+                batch_loss_by_field[field] = losses
+        batch_loss = loss_policy(batch_loss_by_field)
+        loss += batch_loss
+        if train:            
+            batch_loss.backward()
+            optim.step()
+        for field, v in batch_loss_by_field.items():
+            loss_by_field[field] = loss_by_field.get(field, [])
+            loss_by_field[field].append(v.clone().detach())
+    model.train(old_mode)
+    return (loss, loss_by_field)
+
+def apply_to_components(model: GraphAutoencoder,
+                        batchifier: Any,
+                        data: Dataset,
+                        batch_size: int,
+                        gpu: bool) -> Generator[Tuple[Any, Dict[Any, Any]], None, None]:
+    old_mode = model.training
+    model.train(False)
+    for batch_num, (full_entities, full_adjacencies) in enumerate(batchifier(data, batch_size)):
+        logger.debug("Processing batch #%d", batch_num)
+        #batch_loss_by_field = {}
+        if gpu:
+            full_entities = {k : v.cuda() if hasattr(v, "cuda") else v for k, v in full_entities.items()}
+            full_adjacencies = {k : v.cuda() for k, v in full_adjacencies.items()}
+        #print(full_entities)
+        yield model(full_entities, full_adjacencies)
+    model.train(old_mode)
+    #return (reconstructions, bottlenecks)
+
+
+def run_epoch(model: GraphAutoencoder,
+              batchifier: Any,
+              optimizer: Any,
+              loss_policy: Any,
+              train_data: Dataset,
+              dev_data: Dataset,
+              batch_size: int,
+              gpu: bool,
+              mask_tests: Any=[],
+              subselect: bool=False) -> Tuple[Any, Any, Any, Any]:
+    model.train(True)
+    logger.debug("Running over training data")
+    train_loss, train_loss_by_field = run_over_components(model,
+                                                          batchifier,
+                                                          optimizer, 
+                                                          loss_policy,
+                                                          train_data, 
+                                                          batch_size, 
+                                                          gpu,
+                                                          subselect=subselect,
+                                                          train=True,
+                                                          mask_tests=mask_tests,
+    )
+    logger.debug("Running over dev data")
+    model.train(False)
+    dev_loss, dev_loss_by_field = run_over_components(model,
+                                                      batchifier,
+                                                      optimizer, 
+                                                      loss_policy,
+                                                      dev_data, 
+                                                      batch_size, 
+                                                      gpu,
+                                                      subselect=subselect,
+                                                      train=False,
+                                                      mask_tests=mask_tests,
+    )
+
+    return (train_loss.clone().detach().cpu(),
+            #train_loss_by_field,
+            {k : sum([x.sum() for x in v]) for k, v in train_loss_by_field.items()},
+            #{k : sum([x.sum() for x in v]) for k, v in dev_loss_by_field.items()},
+            #{k : [v.clone().detach().cpu() for v in vv] for k, vv in train_loss_by_field.items()},
+            dev_loss.clone().detach().cpu(),
+            {k : sum([x.sum() for x in v]) for k, v in dev_loss_by_field.items()},
+            )
+            #{k : [v.clone().detach().cpu() for v in vv] for k, vv in dev_loss_by_field.items()})
+
+def apply_model(model: Any, data: Dataset, args: Any, schema: Schema, ofd: Any=None) -> Any:
     
-    def parse_known_args(self, rest):
-        parser = argparse.ArgumentParser()
-        for arg in self.arguments: #getattr(cls, "arguments", []):
-            parser.add_argument("--{}".format(arg["dest"]), **arg)
-        return parser.parse_known_args(rest)
+    model.eval()
+    model.train(False)
+    
+    num_batches = data.num_entities // args.batch_size
+    num_batches = num_batches + 1 if num_batches * args.batch_size < data.num_entities else num_batches
+    ids = data.ids
+    batch_to_batch_ids = {b : [ids[i] for i in range(b * args.batch_size, (b + 1) * args.batch_size) if i < data.num_entities] for b in range(num_batches)}
+    representation_storage = {}
+    bottleneck_storage = {}
+    logging.debug("Dataset has %d entities", data.num_entities)
+    try:        
+        for batch_num, batch_ids in batch_to_batch_ids.items():
+            representation_storage[batch_num] = tempfile.mkstemp(prefix="starcoder")[1]
+            bottleneck_storage[batch_num] = tempfile.mkstemp(prefix="starcoder")[1]
+            packed_batch_entities: List[PackedEntity] = [schema.pack(data.entity(i)) for i in batch_ids]
+            stacked_batch_entities = stack_entities(packed_batch_entities, data.schema.data_fields)
+            encoded_batch_entities = model.encode_fields(stacked_batch_entities)
+            entity_indices, field_indices, entity_field_indices = model.compute_indices(stacked_batch_entities)            
+            encoded_entities = model.create_autoencoder_inputs(encoded_batch_entities, entity_indices)
+            bottlenecks, outputs = model.run_first_autoencoder_layer(encoded_entities)
+            torch.save((batch_ids, outputs, entity_indices), representation_storage[batch_num]) # type: ignore
+            torch.save(bottlenecks, bottleneck_storage[batch_num]) # type: ignore
+        for depth in range(1, model.depth + 1):
+            bottlenecks = {}
+            adjacencies: Adjacencies = {}
+            bns = {}
+            for batch_num, batch_ids in batch_to_batch_ids.items():
+                for entity_type_name, bns in torch.load(bottleneck_storage[batch_num]).items(): # type: ignore
+                    bottlenecks[entity_type_name] = bottlenecks.get(entity_type_name, torch.zeros(size=(data.num_entities, model.bottleneck_size)))
+            for batch_num, batch_ids in batch_to_batch_ids.items():
+                entity_ids, ae_inputs, entity_indices = torch.load(representation_storage[batch_num]) # type: ignore
+                bottlenecks, outputs = model.run_structured_autoencoder_layer(depth, ae_inputs, bottlenecks, adjacencies, {}, entity_indices)
+                
+                torch.save((entity_ids, outputs, entity_indices), representation_storage[batch_num]) # type: ignore
+                torch.save(bottlenecks, bottleneck_storage[batch_num]) # type: ignore
 
-    def get_parse_template(self):
-        template = []
-        for arg in getattr(self, "arguments", []) + [{"dest" : "shared_entity_types", "nargs" : "*", "default" : [], "help" : ""}]:
-            template.append("--{0} ${{{1}}}".format(arg["dest"], arg["dest"].upper()))
-        return " ".join(template)
+        for batch_num, b_ids in batch_to_batch_ids.items():
+            logging.debug("Saving batch %d with %d entities", batch_num, len(b_ids))
+            entity_ids, outputs, entity_indices = torch.load(representation_storage[batch_num]) # type: ignore
+            bottlenecks = torch.load(bottleneck_storage[batch_num]) # type: ignore
+            proj = torch.zeros(size=(len(b_ids), model.projected_size))                
+            decoded_fields = model.decode_fields(model.project_autoencoder_outputs(outputs))
+            decoded_entities = model.assemble_entities(decoded_fields, entity_indices)
+            decoded_fields = {k : {kk : vv for kk, vv in v.items() if kk in data.schema.entity_types[k].data_fields} for k, v in decoded_fields.items()}
+            ordered_bottlenecks = {}
+            for entity_type, indices in entity_indices.items():
+                for i, index in enumerate(indices):
+                    ordered_bottlenecks[index.item()] = bottlenecks[entity_type][i]
 
-    def __init__(self, rest):
-        args, rest = self.parse_known_args(rest)
-        for k, v in vars(args).items():
-            assert re.match(r"^[a-zA-Z_]+$", k) != None
-            setattr(self, k, v)
+            for i, eid in enumerate(b_ids):
+                original_entity = data.entity(eid)                 
+                entity_type_name = original_entity[data.schema.entity_type_field.name]
+                entity_data_fields = data.schema.entity_types[entity_type_name].data_fields
 
-
-# def compute_losses(entities, reconstructions, schema):
-#     """
-#     Gather and return all the field losses as a nested dictionary where the first
-#     level of keys are field types, and the second level are field names.
-#     """
-#     losses = {}
-#     for field_name, field_values in entities.items():
-#         if field_name in schema.data_fields:
-#             logger.debug("Computing losses for field %s", field_name)
-#             #mask = entity_values > 0
-#             field_type = type(schema.data_fields[field_name])
-#             reconstruction_values = reconstructions[field_name]
-#             #print(field_name, entity_values.shape, reconstruction_values.shape)
-#             #recon = torch.reshape(reconstruction_values, (reconstruction_values.shape[0], -1)).sum(1)
-#             #selector = torch.masked_select(torch.arange(0, entity_values.shape[0]),
-#             #                               ~torch.isnan(entity_values) & ~torch.isnan(recon))
-#             losses[field_type] = losses.get(field_type, {})
-#             #masked_entity_values = torch.index_select(entity_values, 0, selector) #~torch.isnan(entity_values))
-#             #print(field_values, reconstruction_values)
-#             #print(field_name, field_values.shape, reconstruction_values.shape)
-#             #masked_reconstruction_values = torch.index_select(reconstruction_values, 0, selector) #~torch.isnan(entity_values))
-#             #masked_field_losses =
-#             field_losses = field_model_classes[field_type][2](reconstruction_values, field_values)
-#             losses[field_type][field_name] = field_losses
-#     return losses
-
-
-
-# def run_over_components(model, batchifier, optim, loss_policy, data, batch_size, gpu, train, subselect=False, strict=True, mask_tests=[]):
-#     old_mode = model.training
-#     model.train(train)
-#     loss_by_field = {}
-#     loss = 0.0
-#     for batch_num, ((full_entities, full_adjacencies), (masked_entities, masked_adjacencies)) in enumerate(batchifier(data, batch_size)):
-#         logger.debug("Processing batch #%d", batch_num)
-#         batch_loss_by_field = {}
-#         if gpu:
-#             entities = {k : v.cuda() for k, v in entities.items()}
-#             adjacencies = {k : v.cuda() for k, v in adjacencies.items()}
-#         optim.zero_grad()
-#         reconstructions, bottlenecks, ae_pairs = model(masked_entities, masked_adjacencies)
-#         for field_type, fields in compute_losses(full_entities, reconstructions, data.schema).items():
-#             for field_name, losses in fields.items():
-#                 batch_loss_by_field[(field_name, field_type)] = losses        
-#         batch_loss = loss_policy(batch_loss_by_field, ae_pairs)
-#         loss += batch_loss
-#         if train:            
-#             batch_loss.backward()
-#             optim.step()
-#         for k, v in batch_loss_by_field.items():
-#             loss_by_field[k] = loss_by_field.get(k, [])
-#             loss_by_field[k].append(v.clone().detach())
-#     model.train(old_mode)
-#     return (loss, loss_by_field)
-
-
-# def run_epoch(model, batchifier, optimizer, loss_policy, train_data, dev_data, batch_size, gpu, mask_tests=[], subselect=False):
-#     model.train(True)
-#     logger.debug("Running over training data")
-#     train_loss, train_loss_by_field = run_over_components(model,
-#                                                           batchifier,
-#                                                           optimizer, 
-#                                                           loss_policy,
-#                                                           train_data, 
-#                                                           batch_size, 
-#                                                           gpu,
-#                                                           subselect=subselect,
-#                                                           train=True,
-#                                                           mask_tests=mask_tests,
-#     )
-#     logger.debug("Running over dev data")
-#     model.train(False)
-#     dev_loss, dev_loss_by_field = run_over_components(model,
-#                                                       batchifier,
-#                                                       optimizer, 
-#                                                       loss_policy,
-#                                                       dev_data, 
-#                                                       batch_size, 
-#                                                       gpu,
-#                                                       subselect=subselect,
-#                                                       train=False,
-#                                                       mask_tests=mask_tests,
-#     )
-
-#     return (train_loss.clone().detach().cpu(), 
-#             {k : [v.clone().detach().cpu() for v in vv] for k, vv in train_loss_by_field.items()},
-#             dev_loss.clone().detach().cpu(),
-#             {k : [v.clone().detach().cpu() for v in vv] for k, vv in dev_loss_by_field.items()})
-
-def batch_to_list(batch):
-    """
-    Take a batch, which represents data in the R/pandas style of a dictionary where keys are field names
-    and values are lists of length equal to batch size, and return a list of entities (sort of like
-    running zip over all the values, except preserving the field names)
-    """
-    retval = []
-    for i in range(list(batch.values())[0].shape[0]):
-        item = {}
-        for k, v in batch.items():
-            item[k] = v[i].item()
-        retval.append(item)
-    return retval
+                reconstructed_entity = {data.schema.entity_type_field.name : entity_type_name}
+                for field_name in original_entity.keys():
+                    if field_name in entity_data_fields:
+                        reconstructed_entity[field_name] = decoded_entities[field_name][i].tolist()
+                reconstructed_entity = data.schema.unpack(reconstructed_entity)
+                entity = {"original" : original_entity,
+                          # include missing-but-generated fields
+                          "reconstruction" : {k : v for k, v in reconstructed_entity.items() if k in original_entity},
+                          "bottleneck" : ordered_bottlenecks[i].tolist(),
+                }
+                if ofd:
+                    ofd.write(json.dumps(entity) + "\n")
+    except Exception as e:
+        raise e
+    finally:
+        for tfname in list(bottleneck_storage.values()) + list(representation_storage.values()):
+            try:
+                os.remove(tfname)
+            except Exception as e:
+                logging.info("Could not clean up temporary file: %s", tfname)
+                raise e
 
 
-def tensorize(vals, field_obj):
-    if any([isinstance(v, list) for v in vals]):
-        max_length = max([len(v) for v in vals if isinstance(v, list)])
-        vals = [(v + ([0] * (max_length - len(v)))) if v != None else [0] * max_length for v in vals]
-    elif any([isinstance(v, (str,)) for v in vals]):
-        return numpy.array(vals)
-    else:
-        vals = [(field_obj.missing_value if v == None else v) for v in vals]    
-    retval = torch.tensor(vals, dtype=field_obj.encoded_type)
-    return retval
+            
+def apply_model_cached(model: Any, data: Dataset, args: Any, schema: Schema, ofd: Any=None) -> Any:
+    
+    model.eval()
+    model.train(False)
+    
+    num_batches = data.num_entities // args.batch_size
+    num_batches = num_batches + 1 if num_batches * args.batch_size < data.num_entities else num_batches
+    ids = data.ids
+    batch_to_batch_ids = {b : [ids[i] for i in range(b * args.batch_size, (b + 1) * args.batch_size) if i < data.num_entities] for b in range(num_batches)}
+    representation_storage = {}
+    bottleneck_storage = {}
+    logging.debug("Dataset has %d entities", data.num_entities)
+    try:        
+        for batch_num, batch_ids in batch_to_batch_ids.items():
+            representation_storage[batch_num] = tempfile.mkstemp(prefix="starcoder")[1]
+            bottleneck_storage[batch_num] = tempfile.mkstemp(prefix="starcoder")[1]
+            packed_batch_entities: List[PackedEntity] = [schema.pack(data.entity(i)) for i in batch_ids]
+            stacked_batch_entities = stack_entities(packed_batch_entities, data.schema.data_fields)
+            encoded_batch_entities = model.encode_fields(stacked_batch_entities)
+            entity_indices, field_indices, entity_field_indices = model.compute_indices(stacked_batch_entities)            
+            encoded_entities = model.create_autoencoder_inputs(encoded_batch_entities, entity_indices)
+            bottlenecks, outputs = model.run_first_autoencoder_layer(encoded_entities)
+            torch.save((batch_ids, outputs, entity_indices), representation_storage[batch_num]) # type: ignore
+            torch.save(bottlenecks, bottleneck_storage[batch_num]) # type: ignore
+        for depth in range(1, model.depth + 1):
+            bottlenecks = {}
+            adjacencies: Adjacencies = {}
+            bns = {}
+            for batch_num, batch_ids in batch_to_batch_ids.items():
+                for entity_type_name, bns in torch.load(bottleneck_storage[batch_num]).items(): # type: ignore
+                    bottlenecks[entity_type_name] = bottlenecks.get(entity_type_name, torch.zeros(size=(data.num_entities, model.bottleneck_size)))
+            for batch_num, batch_ids in batch_to_batch_ids.items():
+                entity_ids, ae_inputs, entity_indices = torch.load(representation_storage[batch_num]) # type: ignore
+                bottlenecks, outputs = model.run_structured_autoencoder_layer(depth, ae_inputs, bottlenecks, adjacencies, {}, entity_indices)
+                
+                torch.save((entity_ids, outputs, entity_indices), representation_storage[batch_num]) # type: ignore
+                torch.save(bottlenecks, bottleneck_storage[batch_num]) # type: ignore
 
+        for batch_num, b_ids in batch_to_batch_ids.items():
+            logging.debug("Saving batch %d with %d entities", batch_num, len(b_ids))
+            entity_ids, outputs, entity_indices = torch.load(representation_storage[batch_num]) # type: ignore
+            bottlenecks = torch.load(bottleneck_storage[batch_num]) # type: ignore
+            proj = torch.zeros(size=(len(b_ids), model.projected_size))                
+            decoded_fields = model.decode_fields(model.project_autoencoder_outputs(outputs))
+            decoded_entities = model.assemble_entities(decoded_fields, entity_indices)
+            decoded_fields = {k : {kk : vv for kk, vv in v.items() if kk in data.schema.entity_types[k].data_fields} for k, v in decoded_fields.items()}
+            ordered_bottlenecks = {}
+            for entity_type, indices in entity_indices.items():
+                for i, index in enumerate(indices):
+                    ordered_bottlenecks[index.item()] = bottlenecks[entity_type][i]
 
-def split_batch(entities, adjacencies, count):
-    """
-Naively split a batch in two.
-    """    
-    ix = list(range(len(entities)))
-    random.shuffle(ix)
-    first_ix = ix[0:count]
-    second_ix = ix[count:]
-    first_entities = [entities[i] for i in first_ix]
-    second_entities = [entities[i] for i in second_ix]
-    first_adjacencies = {}
-    second_adjacencies = {}
-    for rel_type, adj in adjacencies.items():
-        try:
-            adjacencies[rel_type] = adj[first_ix, :][:, first_ix]
-            adjacencies[rel_type] = adj[second_ix, :][:, second_ix]
-        except Exception as e:
-            raise e
-    return ((first_entities, first_adjacencies), (second_entities, second_adjacencies))
+            for i, eid in enumerate(b_ids):
+                original_entity = data.entity(eid)                 
+                entity_type_name = original_entity[data.schema.entity_type_field.name]
+                entity_data_fields = data.schema.entity_types[entity_type_name].data_fields
 
-
-def stack_batch(components, schema):
-    lengths = [len(x) for x, _ in components]
-    entities = sum([x for x, _ in components], [])
-    adjacencies = [x for _, x in components]
-    full_adjacencies = {}
-    start = 0
-    for l, adjs in zip(lengths, adjacencies):
-        for name, adj in adjs.items():
-            full_adjacencies[name] = full_adjacencies.get(name, numpy.full((len(entities), len(entities)), False))
-            full_adjacencies[name][start:start + l, start:start + l] = adj.todense()
-        start += l
-    field_names = set(sum([[k for k in e.keys()] for e in entities], list(schema.data_fields.keys())))
-    full_entities = {k : [] for k in field_names}
-    for entity in entities:
-        enc_entity = schema.encode(entity)
-        for field_name in field_names:
-            full_entities[field_name].append(enc_entity.get(field_name, None))
-    full_entities = {k : numpy.array(v) if k not in schema.data_fields else tensorize(v, schema.data_fields[k]) for k, v in full_entities.items()}
-    ne = len(entities)
-    for k, v in full_adjacencies.items():
-        a, b = v.shape
-    return (full_entities, {k : torch.tensor(v) for k, v in full_adjacencies.items()})
+                reconstructed_entity = {data.schema.entity_type_field.name : entity_type_name}
+                for field_name in original_entity.keys():
+                    if field_name in entity_data_fields:
+                        reconstructed_entity[field_name] = decoded_entities[field_name][i].tolist()
+                reconstructed_entity = data.schema.unpack(reconstructed_entity)
+                entity = {"original" : original_entity,
+                          # include missing-but-generated fields
+                          "reconstruction" : {k : v for k, v in reconstructed_entity.items() if k in original_entity},
+                          "bottleneck" : ordered_bottlenecks[i].tolist(),
+                }
+                if ofd:
+                    ofd.write(json.dumps(entity) + "\n")
+    except Exception as e:
+        raise e
+    finally:
+        for tfname in list(bottleneck_storage.values()) + list(representation_storage.values()):
+            try:
+                os.remove(tfname)
+            except Exception as e:
+                logging.info("Could not clean up temporary file: %s", tfname)
+                raise e

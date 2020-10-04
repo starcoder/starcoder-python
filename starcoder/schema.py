@@ -21,10 +21,8 @@ and two properties:
 Schema objects also store the original JSON object they were
 constructed from in the "json" property.
     """
-    def __init__(self, spec: Dict[str, Any] = {}, field_classes: Dict[str, Type[Field]] = {}) -> None: # this "Any" is OK
+    def __init__(self, spec: Dict[str, Any], field_classes: Dict[str, Type[Field]]) -> None: # this "Any" is OK
         self.json = spec.copy()
-        if len(field_classes) == 0:
-            return
         self.id_field: IdField = cast(IdField, field_classes["id"](spec["meta"]["id_field"]))
         self.entity_type_field: EntityTypeField = cast(EntityTypeField, field_classes["entity_type"](spec["meta"]["entity_type_field"]))
         self.data_fields: Dict[str, DataField[Any, Any, Any]] = {} # these "Any"s are OK
@@ -85,11 +83,13 @@ constructed from in the "json" property.
             if self.data_fields[field_name].empty == True:
                 #print(field_name)
                 del self.data_fields[field_name]
-        # remove entity-types that haven't been seen
         for entity_type_name in list(self.entity_types.keys()):
+            # remove undefined fields from entity-types
+            self.entity_types[entity_type_name].data_fields = [f for f in self.entity_types[entity_type_name].data_fields if f in self.data_fields]
+            # remove entity-types that haven't been seen
             if entity_type_name not in self.seen_entity_types:
-                #print(entity_type_name)
                 del self.entity_types[entity_type_name]
+
         # remove fields that don't occur in an entity-type
         for field_name in list(self.data_fields.keys()):
             if all([field_name not in e.data_fields for e in self.entity_types.values()]):

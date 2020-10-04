@@ -4,7 +4,7 @@ import argparse
 import json
 import gzip
 import functools
-import random
+
 import logging
 import numpy
 import scipy.sparse
@@ -13,6 +13,7 @@ from scipy.sparse.csgraph import connected_components
 import torch
 import math
 import uuid
+from starcoder.random import random
 from starcoder.entity import UnpackedEntity, PackedEntity, ID, Index
 from starcoder.field import UnpackedValueType, PackedValueType
 from starcoder.adjacency import Adjacency, Adjacencies

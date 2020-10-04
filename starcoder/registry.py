@@ -1,15 +1,23 @@
 import logging
 from typing import List, Dict, Type, Tuple
+from functools import partial
 
 logger = logging.getLogger(__name__)
 
-from starcoder.field import Field, DataField, RelationshipField, IdField, EntityTypeField, NumericField, CategoricalField, WordSequenceField, CharacterSequenceField
+from starcoder.field import Field, DataField, RelationshipField, IdField, EntityTypeField, NumericField, CategoricalField, WordSequenceField, CharacterSequenceField, DateField, PlaceField, DateTimeField, DistributionField
+#, ScalarField
 field_classes: Dict[str, Type[Field]] = {
     "numeric" : NumericField,
+    #"scalar" : ScalarField,
+    "distribution" : DistributionField,
+    #"time" : NumericField,
+    "place" : PlaceField,
+    "date" : DateField,
+    "datetime" : DateTimeField,
     "categorical" : CategoricalField,
     "boolean" : CategoricalField,
     "keyword" : CategoricalField,
-    "text" : WordSequenceField,
+    "text" : CharacterSequenceField,
     "relationship" : RelationshipField,
     #"image" : field.ImageField,
     #"video" : field.VideoField,
@@ -18,17 +26,19 @@ field_classes: Dict[str, Type[Field]] = {
     "entity_type" : EntityTypeField,
 }
 
-from starcoder.field_encoder import FieldEncoder, NumericEncoder, CategoricalEncoder, SequenceEncoder
-from starcoder.field_decoder import FieldDecoder, NumericDecoder, CategoricalDecoder, SequenceDecoder
-from starcoder.field_loss import FieldLoss, NumericLoss, CategoricalLoss, SequenceLoss
+from starcoder.field_encoder import FieldEncoder, NumericEncoder, CategoricalEncoder, SequenceEncoder, ScalarEncoder, DistributionEncoder
+from starcoder.field_decoder import FieldDecoder, NumericDecoder, CategoricalDecoder, SequenceDecoder, ScalarDecoder, DistributionDecoder
+from starcoder.field_loss import FieldLoss, NumericLoss, CategoricalLoss, SequenceLoss, ScalarLoss
 field_model_classes: Dict[Type[DataField], Tuple[Type[FieldEncoder], Type[FieldDecoder], Type[FieldLoss]]] = { # type: ignore[type-arg]
-    NumericField : (NumericEncoder, NumericDecoder, NumericLoss),
-    #field.DistributionField : (field_models.DistributionEncoder, field_models.DistributionDecoder, field_models.DistributionLoss),
+    NumericField : (ScalarEncoder, ScalarDecoder, ScalarLoss),
     #field.IntegerField : (field_models.NumericEncoder, field_models.NumericDecoder, field_models.NumericLoss),
     CategoricalField : (CategoricalEncoder, CategoricalDecoder, CategoricalLoss),
     CharacterSequenceField : (SequenceEncoder, SequenceDecoder, SequenceLoss),
     WordSequenceField : (SequenceEncoder, SequenceDecoder, SequenceLoss),
-    #field.DateField : (field_models.NumericEncoder, field_models.NumericDecoder, field_models.NumericLoss),
+    DateField : (ScalarEncoder, ScalarDecoder, ScalarLoss),
+    DateTimeField : (ScalarEncoder, ScalarDecoder, ScalarLoss),
+    PlaceField : (partial(NumericEncoder, dims=2), partial(NumericDecoder, dims=2), partial(NumericLoss, dims=2)),
+    DistributionField : (DistributionEncoder, DistributionDecoder, NumericLoss),
     #field.CharacterField : (field_models.TextEncoder, field_models.TextDecoder, field_models.TextLoss),
     #field.ImageField : (field_encoder.ImageEncoder, field_decoder.ImageDecoder, field_loss.ImageLoss),
     #field.VideoField : (field_encoder.VideoEncoder, field_decoder.VideoDecoder, field_loss.VideoLoss),

@@ -14,5 +14,5 @@ setup(name="starcoder",
       maintainer_email="tom@cs.jhu.edu",
       packages=["starcoder"],
       scripts=[],
-      requires=["torch", "pytest", "sklearn", "scipy", "elasticsearch", "django", "requests", "xlrd", "pandas"],
+      requires=["torch", "pytest", "sklearn", "scipy", "elasticsearch", "django", "requests", "xlrd", "pandas", "numpy"],
      )

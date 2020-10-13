@@ -165,94 +165,79 @@ class DateTimeField(NumericField):
 
     def unpack(self, v):
         return None if numpy.isnan(v) else v #date.fromordinal(int(v)).strftime("%d-%b-%Y")
-    
 
-    
-# class IntegerField(DataField[None, int, torch.int32]):
-#     def __init__(self, name: str, **args: Any) -> None:
-#         super(IntegerField, self).__init__(name, **args)
-#     def unpack(self, v: Any) -> Any:
-#         if isinstance(v, torch.Tensor):
-#             v = v.item()
-#         return v
-# class DateField(DataField[]):
-#     def __init__(self, name: str, **args: Any) -> None:
-#         super(DateField, self).__init__(name, **args)
-#     def pack(self, v: Any) -> Any:
-#         t = time.strptime(v, "%d-%b-%Y")
-#         return calendar.timegm(t)
-#     def unpack(self, v: Any) -> Any:
-#         date = time.gmtime(v)
-#         year = date.tm_year
-#         month = calendar.month_abbr[date.tm_mon]
-#         day = date.tm_mday
-#         return "{}-{}-{}".format(day, month, year)
+class ImageField(DataField[str, List[List[List[int]]], float]):
+    #packed_type = torch.float32    
+    def __init__(self, name: str, data_path: str, width: int, height: int, channels: int, channel_size: int, **args: Any) -> None:
+        self.data_path = data_path
+        self.width = width
+        self.height = height
+        self.channels = channels
+        self.channel_size = channel_size
+        super(ImageField, self).__init__(name, **args)
+    def pack(self, v: Any) -> Any:
+        return numpy.random.random((self.width, self.height, self.channels)).tolist()
+    def unpack(self, v: Any) -> Any:
+        return v
+    @property
+    def stacked_type(self) -> torch.dtype:
+        return torch.float32    
+    @property
+    def missing_value(self) -> float:
+        return numpy.full((self.width, self.height, self.channels), float("nan")).tolist()
+    def __len__(self) -> int:
+        return 1
+    def observe_value(self, v: float) -> None:
+        if v:
+            self.empty = False
 
-# class ImageField(DataField[str, List[List[List[int]]], float]):
-#     #packed_type = torch.float32    
-#     def __init__(self, name: str, data_path: str, width: int, height: int, channels: int, channel_size: int, **args: Any) -> None:
-#         self.data_path = data_path
-#         self.width = width
-#         self.height = height
-#         self.channels = channels
-#         self.channel_size = channel_size
-#         super(ImageField, self).__init__(name, **args)
-#     def pack(self, v: Any) -> Any:
-#         return numpy.random.random((self.width, self.height, self.channels)).tolist()
-#     def unpack(self, v: Any) -> Any:
-#         return v
-# class AudioField(DataField[str, List[int], int]):
-#     packed_type = torch.float32
-#     def __init__(self, name: str, data_path: str, channels: int, channel_size: int, **args: Any) -> None:
-#         self.data_path = data_path
-#         self.channels = channels
-#         self.channel_size = channel_size
-#         super(AudioField, self).__init__(name, **args)
-#     def pack(self, v: Any) -> Any:
-#         return numpy.random.random((1000, self.channels)).tolist()
-#     def unpack(self, v: Any) -> Any:
-#         return v
-# class VideoField(DataField[str, List[List[List[List[int]]]], int]):
-#     packed_type = torch.float32        
-#     def __init__(self, name: str, data_path: str, width: int, height: int, channels: int, channel_size: int, **args: Any) -> None:
-#         self.data_path = data_path
-#         self.width = width
-#         self.height = height
-#         self.channels = channels
-#         self.channel_size = channel_size
-#         super(VideoField, self).__init__(name, **args)
-#     def pack(self, v: Any) -> Any:
-#         return numpy.random.random((1000, self.width, self.height, self.channels)).tolist()
-#     def unpack(self, v: Any) -> Any:
-#         return v
+class AudioField(DataField[str, List[int], int]):
+    packed_type = torch.float32
+    def __init__(self, name: str, data_path: str, channels: int, channel_size: int, **args: Any) -> None:
+        self.data_path = data_path
+        self.channels = channels
+        self.channel_size = channel_size
+        super(AudioField, self).__init__(name, **args)
+    def pack(self, v: Any) -> Any:
+        return numpy.random.random((1000, self.channels)).tolist()
+    def unpack(self, v: Any) -> Any:
+        return v
+    @property
+    def stacked_type(self) -> torch.dtype:
+        return torch.float32    
+    @property
+    def missing_value(self) -> float:
+        return numpy.full((1, self.channels), float("nan")).tolist()
+    def __len__(self) -> int:
+        return 1
+    def observe_value(self, v: float) -> None:
+        if v:
+            self.empty = False
 
-# class DistributionField(DataField[None, List[float], float]):
-#     packed_type = torch.float32
-#     missing_value = float("nan")
-#     def __init__(self, name: str, **args: Any) -> None:
-#         super(DistributionField, self).__init__(name, **args)
-#         self.categories: List[str] = []
-#     def pack(self, v: Any) -> Any:
-#         total = sum(v.values())
-#         return [0.0 if c not in v else (v[c] / total) for c in self.categories]
-#     def unpack(self, v: Any) -> Any:
-#         retval = {}
-#         if all([x >= 0 for x in v]):
-#             total = sum([x for x in v])
-#             for k, p in zip(self.categories, v):
-#                 if p > 0:
-#                     retval[k] = p / total
-#         elif all([x <= 0 for x in v]):            
-#             total = sum([math.exp(x) for x in v])
-#             for k, p in zip(self.categories, v):
-#                 retval[k] = math.exp(p) / total            
-#         else:
-#             raise Exception("Got probabilities that were not all of the same sign!")
-#         return retval
-#     def _observe_value(self, v: Any) -> Any:
-#         for k, v in v.items():
-#             if k not in self.categories:
-#                 self.categories.append(k)
+class VideoField(DataField[str, List[List[List[List[int]]]], int]):
+    packed_type = torch.float32        
+    def __init__(self, name: str, data_path: str, width: int, height: int, channels: int, channel_size: int, **args: Any) -> None:
+        self.data_path = data_path
+        self.width = width
+        self.height = height
+        self.channels = channels
+        self.channel_size = channel_size
+        super(VideoField, self).__init__(name, **args)
+    def pack(self, v: Any) -> Any:
+        return numpy.random.random((1, self.width, self.height, self.channels)).tolist()
+    def unpack(self, v: Any) -> Any:
+        return v
+    @property
+    def stacked_type(self) -> torch.dtype:
+        return torch.float32    
+    @property
+    def missing_value(self) -> float:
+        return numpy.full((1000, self.width, self.height, self.channels), float("nan")).tolist()
+    def __len__(self) -> int:
+        return 1
+    def observe_value(self, v: float) -> None:
+        if v:
+            self.empty = False
 
 class CategoricalField(DataField[None, str, int]):
     #missing_value = 0
@@ -308,7 +293,8 @@ class SequenceField(DataField[None, Any, List[int]]):
         self.max_length = 0
     
     def observe_value(self, vs: Any) -> None:
-        for v in self.split_func(vs):
+        values = self.split_func(vs)
+        for v in values:
             i = self.item_to_id.setdefault(v, len(self.item_to_id) + 2)
             self.id_to_item[i] = v
         self.max_length = max(len(vs), self.max_length)

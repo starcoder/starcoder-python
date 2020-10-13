@@ -92,50 +92,50 @@ class ScalarDecoder(FieldDecoder):
 #     def output_size(self) -> int:
 #         return self._linear.out_features
 
-# class AudioDecoder(FieldDecoder):
-#     def __init__(self, field: DataField, input_size: int, activation: Activation, **args: Any) -> None:
-#         super(AudioDecoder, self).__init__()                
-#         self._linear = torch.nn.Linear(input_size, 1)
-#         self.activation = activation
-#     def forward(self, x: Tensor) -> Tensor:
-#         retval = self.activation(self._linear(x))
-#         return retval
-#     @property
-#     def input_size(self) -> int:
-#         return self._linear.in_features
-#     @property
-#     def output_size(self) -> int:
-#         return self._linear.out_features
+class AudioDecoder(FieldDecoder):
+    def __init__(self, field: DataField, input_size: int, activation: Activation, **args: Any) -> None:
+        super(AudioDecoder, self).__init__()                
+        self._linear = torch.nn.Linear(input_size, 1)
+        self.activation = activation
+    def forward(self, x: Tensor) -> Tensor:
+        retval = self.activation(self._linear(x))
+        return retval
+    @property
+    def input_size(self) -> int:
+        return self._linear.in_features
+    @property
+    def output_size(self) -> int:
+        return self._linear.out_features
 
-# class VideoDecoder(FieldDecoder):
-#     def __init__(self, field: DataField, input_size: int, activation: Activation, **args: Any) -> None:
-#         super(VideoDecoder, self).__init__()                
-#         self._linear = torch.nn.Linear(input_size, 1)
-#         self.activation = activation
-#     def forward(self, x: Tensor) -> Tensor:
-#         retval = self.activation(self._linear(x))
-#         return retval
-#     @property
-#     def input_size(self) -> int:
-#         return self._linear.in_features
-#     @property
-#     def output_size(self) -> int:
-#         return self._linear.out_features
+class VideoDecoder(FieldDecoder):
+    def __init__(self, field: DataField, input_size: int, activation: Activation, **args: Any) -> None:
+        super(VideoDecoder, self).__init__()                
+        self._linear = torch.nn.Linear(input_size, 1)
+        self.activation = activation
+    def forward(self, x: Tensor) -> Tensor:
+        retval = self.activation(self._linear(x))
+        return retval
+    @property
+    def input_size(self) -> int:
+        return self._linear.in_features
+    @property
+    def output_size(self) -> int:
+        return self._linear.out_features
 
-# class ImageDecoder(FieldDecoder):
-#     def __init__(self, field: DataField, input_size: int, activation: Activation, **args: Any) -> None:
-#         super(ImageDecoder, self).__init__()                
-#         self._linear = torch.nn.Linear(input_size, 1)
-#         self.activation = activation
-#     def forward(self, x: Tensor) -> Tensor:
-#         retval = self.activation(self._linear(x))
-#         return retval
-#     @property
-#     def input_size(self) -> int:
-#         return self._linear.in_features
-#     @property
-#     def output_size(self) -> int:
-#         return self._linear.out_features
+class ImageDecoder(FieldDecoder):
+    def __init__(self, field: DataField, input_size: int, activation: Activation, **args: Any) -> None:
+        super(ImageDecoder, self).__init__()                
+        self._linear = torch.nn.Linear(input_size, 1)
+        self.activation = activation
+    def forward(self, x: Tensor) -> Tensor:
+        retval = self.activation(self._linear(x))
+        return retval
+    @property
+    def input_size(self) -> int:
+        return self._linear.in_features
+    @property
+    def output_size(self) -> int:
+        return self._linear.out_features
 
 class SequenceDecoder(FieldDecoder):
     def __init__(self, field: SequenceField, input_size: int, activation: Activation, **args: Any) -> None:

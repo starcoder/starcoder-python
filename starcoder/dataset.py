@@ -77,7 +77,8 @@ class Dataset(torch.utils.data.Dataset): # type: ignore
         if invert:
             data = Dataset(self.schema, [self.entities[i] for i in range(len(self)) if self.index_to_id[cast(Index, i)] not in ids])
         else:
-            data = Dataset(self.schema, [self.entities[self.id_to_index[eid]] for eid in ids])
+            # this should never fail lookup, but...also, commit or don't to always using strings
+            data = Dataset(self.schema, [self.entities[self.id_to_index[eid]] for eid in ids if eid in self.id_to_index])
         return data
     
     def subselect_entities(self, ids: Sequence[ID], invert: bool=False) -> "Dataset":

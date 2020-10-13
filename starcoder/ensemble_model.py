@@ -136,7 +136,8 @@ class GraphAutoencoder(Ensemble):
 
     def encode_fields(self, entities: StackedEntities) -> Dict[str, Tensor]:
         logger.debug("Encoding each input field to a fixed-length representation")
-        return {k : self.field_encoders[k](v) if k in self.field_encoders else v for k, v in entities.items()}
+        retval = {k : self.field_encoders[k](v) if k in self.field_encoders else v for k, v in entities.items()}
+        return retval
     
     def create_autoencoder_inputs(self, encoded_fields: Dict[str, Tensor], entity_indices: Dict[str, Tensor]) -> Dict[str, Tensor]:
         logger.debug("Constructing entity-autoencoder inputs by concatenating field encodings")
@@ -148,13 +149,38 @@ class GraphAutoencoder(Ensemble):
             #            
             autoencoder_input_lists[entity_type.name] = [torch.zeros(size=(entity_indices[entity_type.name].shape[0], 8), dtype=torch.float32, device=self.device)]
             for field_name in entity_type.data_fields:
-                vals = torch.index_select(encoded_fields[field_name], 0, entity_indices[entity_type.name])
+                vals = torch.index_select(
+                    encoded_fields[field_name], 
+                    0, 
+                    entity_indices[entity_type.name]
+                )
                 autoencoder_input_lists[entity_type.name].append(vals)
                 #print(field_name, vals.shape)
-                inds = torch.where(torch.isnan(vals[:, 0]), torch.zeros(size=(vals.shape[0], 1)), torch.ones(size=(vals.shape[0], 1)))
-                autoencoder_input_lists[entity_type.name].append(torch.zeros(size=(autoencoder_input_lists[entity_type.name][-1].shape[0], 1)))
-            autoencoder_input_lists[entity_type.name].append(torch.zeros(size=(entity_indices[entity_type.name].shape[0], 0), dtype=torch.float32, device=self.device))
-            autoencoder_inputs[entity_type.name] = torch.cat(autoencoder_input_lists[entity_type.name], 1)
+                inds = torch.where(
+                    torch.isnan(vals[:, 0]), 
+                    torch.zeros(size=(vals.shape[0], 1), device=self.device), 
+                    torch.ones(size=(vals.shape[0], 1), device=self.device)
+                )
+                autoencoder_input_lists[entity_type.name].append(
+                    torch.zeros(
+                        size=(
+                            autoencoder_input_lists[entity_type.name][-1].shape[0], 
+                            1
+                        ),
+                        device=self.device
+                    )
+                )
+            autoencoder_input_lists[entity_type.name].append(
+                torch.zeros(
+                    size=(entity_indices[entity_type.name].shape[0], 0), 
+                    dtype=torch.float32,
+                    device=self.device
+                )
+            )
+            autoencoder_inputs[entity_type.name] = torch.cat(
+                autoencoder_input_lists[entity_type.name], 
+                1
+            )
             autoencoder_inputs[entity_type.name][torch.isnan(autoencoder_inputs[entity_type.name])] = 0
         logger.debug("Shapes: %s", {k : v.shape for k, v in autoencoder_inputs.items()})
         return autoencoder_inputs    
@@ -204,10 +230,14 @@ class GraphAutoencoder(Ensemble):
                     if rel_name in adjacencies:
                         related_indices_ = index_space.masked_select(adjacencies[rel_name][index])
                         #print(batch_index_to_entity_index)
-                        related_indices = torch.tensor([batch_index_to_entity_index[j] for j in related_indices_])
+                        related_indices = torch.tensor([batch_index_to_entity_index[j] for j in related_indices_], device=self.device)
                         if len(related_indices) > 0:
                             try:
-                                obns = torch.index_select(prev_bottlenecks[target_entity_type], 0, related_indices)
+                                obns = torch.index_select(
+                                    prev_bottlenecks[target_entity_type], 
+                                    0, 
+                                    related_indices
+                                )
                             except Exception as e:
                                 print(related_indices, prev_bottlenecks[target_entity_type].shape, batch_index_to_entity_index)
                                 raise e
@@ -263,7 +293,13 @@ class GraphAutoencoder(Ensemble):
        for entity_type_name, fields in decoded_fields.items():
            indices = entity_indices[entity_type_name]
            for field_name, field_values in fields.items():
-               retval[field_name] = retval.get(field_name, torch.empty(size=(num,) + field_values.shape[1:]))
+               retval[field_name] = retval.get(
+                   field_name, 
+                   torch.empty(
+                       size=(num,) + field_values.shape[1:],
+                       device=self.device,
+                   )
+               )
                retval[field_name][indices] = field_values
        return retval
     
@@ -314,14 +350,15 @@ class GraphAutoencoder(Ensemble):
         resized_encoded_entities = self.project_autoencoder_outputs(encoded_entities)
         decoded_fields = self.decode_fields(resized_encoded_entities)
         decoded_entities = self.assemble_entities(decoded_fields, entity_indices)
-        normalized_entities = {k : self.field_decoders[k].normalize(v.detach()) for k, v in decoded_entities.items()}
+        normalized_entities = {k : self.field_decoders[k].normalize(v.cpu().detach()) for k, v in decoded_entities.items()}
         for k, v in entities.items():
             if k not in decoded_entities:
                 decoded_entities[k] = v
                 normalized_entities[k] = v
         bottlenecks_by_id = {}
         for entity_type_name, bns in bottlenecks.items():
-            ids = entities[self.schema.id_field.name][entity_indices[entity_type_name]]
+            #print(entities[self.schema.id_field.name])
+            ids = entities[self.schema.id_field.name][entity_indices[entity_type_name].cpu()]
             # strange how numpy.array can be a scalar here!
             if isinstance(ids, str):
                 ids = [ids]

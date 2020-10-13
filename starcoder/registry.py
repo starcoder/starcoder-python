@@ -4,11 +4,11 @@ from functools import partial
 
 logger = logging.getLogger(__name__)
 
-from starcoder.field import Field, DataField, RelationshipField, IdField, EntityTypeField, NumericField, CategoricalField, WordSequenceField, CharacterSequenceField, DateField, PlaceField, DateTimeField, DistributionField
+from starcoder.field import Field, DataField, RelationshipField, IdField, EntityTypeField, NumericField, CategoricalField, WordSequenceField, CharacterSequenceField, DateField, PlaceField, DateTimeField, DistributionField, ImageField, VideoField, AudioField
 #, ScalarField
 field_classes: Dict[str, Type[Field]] = {
     "numeric" : NumericField,
-    #"scalar" : ScalarField,
+    "scalar" : NumericField,
     "distribution" : DistributionField,
     #"time" : NumericField,
     "place" : PlaceField,
@@ -19,19 +19,18 @@ field_classes: Dict[str, Type[Field]] = {
     "keyword" : CategoricalField,
     "text" : CharacterSequenceField,
     "relationship" : RelationshipField,
-    #"image" : field.ImageField,
-    #"video" : field.VideoField,
-    #"audio" : field.AudioField,
+    "image" : ImageField,
+    "video" : VideoField,
+    "audio" : AudioField,
     "id" : IdField,
     "entity_type" : EntityTypeField,
 }
 
-from starcoder.field_encoder import FieldEncoder, NumericEncoder, CategoricalEncoder, SequenceEncoder, ScalarEncoder, DistributionEncoder
-from starcoder.field_decoder import FieldDecoder, NumericDecoder, CategoricalDecoder, SequenceDecoder, ScalarDecoder, DistributionDecoder
-from starcoder.field_loss import FieldLoss, NumericLoss, CategoricalLoss, SequenceLoss, ScalarLoss
+from starcoder.field_encoder import FieldEncoder, NumericEncoder, CategoricalEncoder, SequenceEncoder, ScalarEncoder, DistributionEncoder, ImageEncoder, VideoEncoder, AudioEncoder
+from starcoder.field_decoder import FieldDecoder, NumericDecoder, CategoricalDecoder, SequenceDecoder, ScalarDecoder, DistributionDecoder, ImageDecoder, VideoDecoder, AudioDecoder
+from starcoder.field_loss import FieldLoss, NumericLoss, CategoricalLoss, SequenceLoss, ScalarLoss, ImageLoss, VideoLoss, AudioLoss
 field_model_classes: Dict[Type[DataField], Tuple[Type[FieldEncoder], Type[FieldDecoder], Type[FieldLoss]]] = { # type: ignore[type-arg]
     NumericField : (ScalarEncoder, ScalarDecoder, ScalarLoss),
-    #field.IntegerField : (field_models.NumericEncoder, field_models.NumericDecoder, field_models.NumericLoss),
     CategoricalField : (CategoricalEncoder, CategoricalDecoder, CategoricalLoss),
     CharacterSequenceField : (SequenceEncoder, SequenceDecoder, SequenceLoss),
     WordSequenceField : (SequenceEncoder, SequenceDecoder, SequenceLoss),
@@ -39,10 +38,9 @@ field_model_classes: Dict[Type[DataField], Tuple[Type[FieldEncoder], Type[FieldD
     DateTimeField : (ScalarEncoder, ScalarDecoder, ScalarLoss),
     PlaceField : (partial(NumericEncoder, dims=2), partial(NumericDecoder, dims=2), partial(NumericLoss, dims=2)),
     DistributionField : (DistributionEncoder, DistributionDecoder, NumericLoss),
-    #field.CharacterField : (field_models.TextEncoder, field_models.TextDecoder, field_models.TextLoss),
-    #field.ImageField : (field_encoder.ImageEncoder, field_decoder.ImageDecoder, field_loss.ImageLoss),
-    #field.VideoField : (field_encoder.VideoEncoder, field_decoder.VideoDecoder, field_loss.VideoLoss),
-    #field.AudioField : (field_encoder.AudioEncoder, field_decoder.AudioDecoder, field_loss.AudioLoss),    
+    ImageField : (ImageEncoder, ImageDecoder, ImageLoss),
+    VideoField : (VideoEncoder, VideoDecoder, VideoLoss),
+    AudioField : (AudioEncoder, AudioDecoder, AudioLoss),    
 }
 
 from starcoder.summarizer import Summarizer, SingleSummarizer, RNNSummarizer, MaxPoolSummarizer

@@ -26,6 +26,7 @@ def compute_losses(model: GraphAutoencoder,
     Gather and return all the field losses as a nested dictionary where the first
     level of keys are field types, and the second level are field names.
     """
+    logger.debug("Started computing all losses")
     losses = {}
     for entity_type_name, entity_type in schema.entity_types.items():
         for field_name in entity_type.data_fields:
@@ -38,6 +39,7 @@ def compute_losses(model: GraphAutoencoder,
             field_losses = model.field_losses[field.name](reconstruction_values, field_values)
             mask = ~torch.isnan(field_losses)
             losses[field.name] = torch.masked_select(field_losses, mask)
+    logger.debug("Finished computing all losses")
     return losses
 
 
@@ -67,14 +69,19 @@ def run_over_components(model: GraphAutoencoder,
         for field, losses in compute_losses(model, full_entities, reconstructions, data.schema).items():
             if losses.shape[0] > 0:
                 batch_loss_by_field[field] = losses
+        logging.debug("Applying loss policy")
         batch_loss = loss_policy(batch_loss_by_field)
         loss += batch_loss
         if train:            
+            logging.debug("Back-propagating")
             batch_loss.backward()
+            logging.debug("Stepping")
             optim.step()
+        logging.debug("Assembling losses by field")
         for field, v in batch_loss_by_field.items():
             loss_by_field[field] = loss_by_field.get(field, [])
             loss_by_field[field].append(v.clone().detach())
+        logging.debug("Finished batch #%d", batch_num)
     model.train(old_mode)
     return (loss, loss_by_field)
 
@@ -91,7 +98,6 @@ def apply_to_components(model: GraphAutoencoder,
         if gpu:
             full_entities = {k : v.cuda() if hasattr(v, "cuda") else v for k, v in full_entities.items()}
             full_adjacencies = {k : v.cuda() for k, v in full_adjacencies.items()}
-        #print(full_entities)
         yield model(full_entities, full_adjacencies)
     model.train(old_mode)
     #return (reconstructions, bottlenecks)

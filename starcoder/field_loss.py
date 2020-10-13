@@ -88,23 +88,10 @@ class ScalarLoss(FieldLoss[Tensor, Tensor]):
         super(ScalarLoss, self).__init__(field)
         self.reduction = reduction
     def __call__(self, guess: Tensor, gold: Tensor) -> Tensor:
-        #print(guess)
-        #print(guess.shape, gold.shape)
         guess = guess.flatten()
         gold = gold.flatten()
         selector = ~torch.isnan(gold) #.to(device=guess.device)
-        #bselector = ~torch.isnan(guess) #.to(device=guess.device)
-        #selector = aselector & bselector
-        #print(aselector, bselector, selector)
-        #if selector.tolist() != bselector.tolist():
-            #print(guess, gold)
-            #print(selector, bselector)
-        #    print(selector != bselector)
-        #    raise Exception()
-        #raise Exception()
         retval = torch.nn.functional.mse_loss(torch.masked_select(guess, selector), torch.masked_select(gold, selector), reduction=self.reduction)
-        #print(retval)
-        #print(gold)
         return retval
 
 
@@ -122,45 +109,45 @@ class ScalarLoss(FieldLoss[Tensor, Tensor]):
 
 
 
-# class AudioLoss(FieldLoss):
-#     def __init__(self, field: DataField, reduction: str="none") -> None:
-#         super(AudioLoss, self).__init__(field)
-#         self.reduction = reduction
-#     def compute(self, guess: Tensor, gold: Tensor) -> Tensor:
-#         guess = guess.flatten()
-#         gold = gold.flatten()
-#         selector = ~torch.isnan(gold)
-#         retval = torch.nn.functional.mse_loss(torch.masked_select(guess, selector), torch.masked_select(gold, selector), reduction=self.reduction)
-#         return retval
+class AudioLoss(FieldLoss):
+    def __init__(self, field: DataField, reduction: str="none") -> None:
+        super(AudioLoss, self).__init__(field)
+        self.reduction = reduction
+    def __call__(self, guess: Tensor, gold: Tensor) -> Tensor:
+        guess = guess.flatten()
+        gold = gold.flatten()
+        selector = ~torch.isnan(gold)
+        retval = torch.nn.functional.mse_loss(torch.masked_select(guess, selector), torch.masked_select(gold, selector), reduction=self.reduction)
+        return retval
 
 
 
 
 
-# class VideoLoss(FieldLoss):
-#     def __init__(self, field: DataField, reduction: str="none") -> None:
-#         super(VideoLoss, self).__init__(field)
-#         self.reduction = reduction
-#     def compute(self, guess: Tensor, gold: Tensor) -> Tensor:
-#         guess = guess.flatten()
-#         gold = gold.flatten()
-#         selector = ~torch.isnan(gold)
-#         retval = torch.nn.functional.mse_loss(torch.masked_select(guess, selector), torch.masked_select(gold, selector), reduction=self.reduction)
-#         return retval
+class VideoLoss(FieldLoss):
+    def __init__(self, field: DataField, reduction: str="none") -> None:
+        super(VideoLoss, self).__init__(field)
+        self.reduction = reduction
+    def __call__(self, guess: Tensor, gold: Tensor) -> Tensor:
+        guess = guess.flatten()
+        gold = gold.flatten()
+        selector = ~torch.isnan(gold)
+        retval = torch.nn.functional.mse_loss(torch.masked_select(guess, selector), torch.masked_select(gold, selector), reduction=self.reduction)
+        return retval
 
 
 
 
-# class ImageLoss(FieldLoss):
-#     def __init__(self, field: DataField, reduction: str="none") -> None:
-#         super(ImageLoss, self).__init__(field)
-#         self.reduction = reduction
-#     def compute(self, guess: Tensor, gold: Tensor) -> Tensor:
-#         guess = guess.flatten()
-#         gold = gold.flatten()
-#         selector = ~torch.isnan(gold)
-#         retval = torch.nn.functional.mse_loss(torch.masked_select(guess, selector), torch.masked_select(gold, selector), reduction=self.reduction)
-#         return retval
+class ImageLoss(FieldLoss):
+    def __init__(self, field: DataField, reduction: str="none") -> None:
+        super(ImageLoss, self).__init__(field)
+        self.reduction = reduction
+    def __call__(self, guess: Tensor, gold: Tensor) -> Tensor:
+        guess = guess.flatten()
+        gold = gold.flatten()
+        selector = ~torch.isnan(gold)
+        retval = torch.nn.functional.mse_loss(torch.masked_select(guess, selector), torch.masked_select(gold, selector), reduction=self.reduction)
+        return retval
     
 
 # item_sequences -> lengths -> hidden_state

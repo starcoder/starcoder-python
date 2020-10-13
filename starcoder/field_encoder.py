@@ -76,35 +76,35 @@ class ScalarEncoder(FieldEncoder):
 #     def output_size(self) -> int:
 #         return self._size
 
-# class AudioEncoder(FieldEncoder):
-#     def __init__(self, field: DataField, activation: Activation, **args: Any) -> None:
-#         super(AudioEncoder, self).__init__()        
-#     def forward(self, x: Tensor) -> Tensor:
-#         retval = torch.as_tensor(torch.unsqueeze(x, 1), dtype=torch.float32, device=x.device)
-#         return retval
-#     @property
-#     def output_size(self) -> int:
-#         return 1
+class AudioEncoder(FieldEncoder):
+    def __init__(self, field: DataField, activation: Activation, **args: Any) -> None:
+        super(AudioEncoder, self).__init__()        
+    def forward(self, x: Tensor) -> Tensor:
+        retval = torch.as_tensor(torch.unsqueeze(x, 1), dtype=torch.float32, device=x.device)
+        return retval
+    @property
+    def output_size(self) -> int:
+        return 1
 
-# class VideoEncoder(FieldEncoder):
-#     def __init__(self, field: DataField, activation: Activation, **args: Any) -> None:
-#         super(VideoEncoder, self).__init__()        
-#     def forward(self, x: Tensor) -> Tensor:
-#         retval = torch.as_tensor(torch.unsqueeze(x, 1), dtype=torch.float32, device=x.device)
-#         return retval
-#     @property
-#     def output_size(self) -> int:
-#         return 1
+class VideoEncoder(FieldEncoder):
+    def __init__(self, field: DataField, activation: Activation, **args: Any) -> None:
+        super(VideoEncoder, self).__init__()        
+    def forward(self, x: Tensor) -> Tensor:
+        retval = torch.as_tensor(torch.unsqueeze(x, 1), dtype=torch.float32, device=x.device)
+        return retval
+    @property
+    def output_size(self) -> int:
+        return 1
 
-# class ImageEncoder(FieldEncoder):
-#     def __init__(self, field: DataField, activation: Activation, **args: Any) -> None:
-#         super(ImageEncoder, self).__init__()        
-#     def forward(self, x: Tensor) -> Tensor:
-#         retval = torch.as_tensor(torch.unsqueeze(x, 1), dtype=torch.float32, device=x.device)
-#         return retval
-#     @property
-#     def output_size(self) -> int:
-#         return 1
+class ImageEncoder(FieldEncoder):
+    def __init__(self, field: DataField, activation: Activation, **args: Any) -> None:
+        super(ImageEncoder, self).__init__()        
+    def forward(self, x: Tensor) -> Tensor:
+        retval = torch.as_tensor(torch.unsqueeze(x, 1), dtype=torch.float32, device=x.device)
+        return retval
+    @property
+    def output_size(self) -> int:
+        return 1
 
 class SequenceEncoder(FieldEncoder):
     def __init__(self, field: SequenceField, activation: Activation, **args: Any) -> None:
@@ -122,7 +122,7 @@ class SequenceEncoder(FieldEncoder):
         nonempty = l != 0
         x = x[nonempty]
         if x.shape[0] == 0:
-            return torch.zeros(size=(nonempty.shape[0], self.output_size))
+            return torch.zeros(size=(nonempty.shape[0], self.output_size), device=x.device)
         l = l[nonempty]
         embs = self._embeddings(x)
         pk = torch.nn.utils.rnn.pack_padded_sequence(embs, l, batch_first=True, enforce_sorted=False)

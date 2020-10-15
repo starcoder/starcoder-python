@@ -120,9 +120,11 @@ class GraphAutoencoder(Ensemble):
         self.field_losses = {}
         for field_name, field_object in self.schema.data_fields.items():
             field_type = type(field_object)
-            field_decoders[field_name] = field_model_classes[field_type][1](field_object,
+            field_decoders[field_name] = field_model_classes[field_type][1](field_object,                                                                            
                                                                             self.projected_size,
-                                                                            activation)
+                                                                            activation,
+                                                                            encoder=self.field_encoders[field_name]
+            )
             self.field_losses[field_name] = field_model_classes[field_type][2](field_object)
         self.field_decoders = torch.nn.ModuleDict(field_decoders)
 

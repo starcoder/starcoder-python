@@ -163,11 +163,14 @@ class SequenceLoss(FieldLoss[Tensor, Tensor]):
         super(SequenceLoss, self).__init__(field)
         self.reduction = reduction
     def __call__(self, x: Tensor, target: Tensor) -> Tensor:
+        min_len = min(x.shape[1], target.shape[1])
         if target.shape[1] == 0:
             target = torch.zeros(size=x.shape[:-1], device=x.device, dtype=torch.long)
-        losses = []
-        for v in range(min(x.shape[1], target.shape[1])):
-            losses.append(torch.nn.functional.nll_loss(x[:, v, :], target[:, v], reduction=self.reduction))
-        return cast(Tensor, sum(losses))
-
-
+        target = target[:, 0:min_len]
+        x = x[:, 0:min_len, :]
+        target = target.flatten(start_dim=0, end_dim=1)
+        x = x.flatten(start_dim=0, end_dim=1)
+        mask = target != 0
+        x = x[mask]
+        target = target[mask]
+        return torch.nn.functional.nll_loss(x, target, reduction=self.reduction)

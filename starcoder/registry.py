@@ -4,13 +4,10 @@ from functools import partial
 
 logger = logging.getLogger(__name__)
 
-from starcoder.field import Field, DataField, RelationshipField, IdField, EntityTypeField, NumericField, CategoricalField, WordSequenceField, CharacterSequenceField, DateField, PlaceField, DateTimeField, DistributionField, ImageField, VideoField, AudioField
-#, ScalarField
+from starcoder.field import Field, DataField, RelationshipField, IdField, EntityTypeField, NumericField, CategoricalField, WordSequenceField, CharacterSequenceField, DateField, PlaceField, DateTimeField, DistributionField, ImageField, VideoField, AudioField, ScalarField
 field_classes: Dict[str, Type[Field]] = {
-    "numeric" : NumericField,
-    "scalar" : NumericField,
+    "scalar" : ScalarField,
     "distribution" : DistributionField,
-    #"time" : NumericField,
     "place" : PlaceField,
     "date" : DateField,
     "datetime" : DateTimeField,
@@ -30,7 +27,7 @@ from starcoder.field_encoder import FieldEncoder, NumericEncoder, CategoricalEnc
 from starcoder.field_decoder import FieldDecoder, NumericDecoder, CategoricalDecoder, SequenceDecoder, ScalarDecoder, DistributionDecoder, ImageDecoder, VideoDecoder, AudioDecoder
 from starcoder.field_loss import FieldLoss, NumericLoss, CategoricalLoss, SequenceLoss, ScalarLoss, ImageLoss, VideoLoss, AudioLoss
 field_model_classes: Dict[Type[DataField], Tuple[Type[FieldEncoder], Type[FieldDecoder], Type[FieldLoss]]] = { # type: ignore[type-arg]
-    NumericField : (ScalarEncoder, ScalarDecoder, ScalarLoss),
+    ScalarField : (ScalarEncoder, ScalarDecoder, ScalarLoss),
     CategoricalField : (CategoricalEncoder, CategoricalDecoder, CategoricalLoss),
     CharacterSequenceField : (SequenceEncoder, SequenceDecoder, SequenceLoss),
     WordSequenceField : (SequenceEncoder, SequenceDecoder, SequenceLoss),

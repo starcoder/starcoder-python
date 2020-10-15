@@ -71,7 +71,7 @@ def run_over_components(model: GraphAutoencoder,
                 batch_loss_by_field[field] = losses
         logging.debug("Applying loss policy")
         batch_loss = loss_policy(batch_loss_by_field)
-        loss += batch_loss
+        loss += batch_loss.clone().detach()
         if train:            
             logging.debug("Back-propagating")
             batch_loss.backward()
@@ -82,6 +82,7 @@ def run_over_components(model: GraphAutoencoder,
             loss_by_field[field] = loss_by_field.get(field, [])
             loss_by_field[field].append(v.clone().detach())
         logging.debug("Finished batch #%d", batch_num)
+        #sys.exit()
     model.train(old_mode)
     return (loss, loss_by_field)
 

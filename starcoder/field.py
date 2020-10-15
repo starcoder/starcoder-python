@@ -144,6 +144,53 @@ class NumericField(DataField[None, float, float]):
     #def elastic_field(self) -> Dict[str, Any]:
     #    return {"type" : "float"}
 
+    
+class ScalarField(DataField[None, float, float]):
+    #packed_type = torch.float32
+    #missing_value = float("nan")
+    def __init__(self, name: str, **args: Any) -> None:
+        super(ScalarField, self).__init__(name, **args)
+        self.max_val = None
+        self.min_val = None
+    def observe_value(self, v: float) -> None:
+        if v:
+            self.max_val = v if self.max_val == None else max(self.max_val, v) # type: ignore
+            self.min_val = v if self.min_val == None else min(self.min_val, v) # type: ignore
+            self.empty = False
+        #try:
+        #    retval = float(v)
+        #    self.max_val = retval if self.max_val == None else max(self.max_val, v) # type: ignore
+        #    self.min_val = retval if self.min_val == None else min(self.min_val, v) # type: ignore
+        #    self.empty = False
+        #    return float(retval)
+        #except Exception as e:
+        #    logger.error("Could not interpret '%s' for NumericField '%s'", v, self.name)
+        #    raise e
+    def unpack(self, v: List[float]) -> Optional[float]: # type: ignore
+        return v
+        #if isinstance(v, torch.Tensor):
+        #    v = v.item()
+        #return (None if numpy.isnan(v) else v)
+    def pack(self, v: Optional[float]) -> float:
+        return (self.missing_value if v is None else v)
+    #@property
+    #def packed_type(self) -> dtype:
+    #    return torch.float32
+    @property
+    def stacked_type(self) -> torch.dtype:
+        return torch.float32    
+    @property
+    def missing_value(self) -> float:
+        return float("nan")
+    def __str__(self) -> str:
+        #return "{1} field: {0}[{2}, {3}]".format(self.name, self.type_name, self.min_val, self.max_val)
+        return "{0}: {1}".format(self.name, self.type_name, self.min_val, self.max_val)
+    def __len__(self) -> int:
+        return 1
+    #@property
+    #def elastic_field(self) -> Dict[str, Any]:
+    #    return {"type" : "float"}
+
 
     
 class DateField(NumericField):
@@ -290,28 +337,29 @@ class SequenceField(DataField[None, Any, List[int]]):
         self.join_func = join_func
         self.item_to_id: Dict[str, int] = {} #{None : 0}
         self.id_to_item: Dict[int, str] = {} #{0 : None}
-        self.max_length = 0
+        self.max_length = 2
     
     def observe_value(self, vs: Any) -> None:
         values = self.split_func(vs)
         for v in values:
-            i = self.item_to_id.setdefault(v, len(self.item_to_id) + 2)
+            i = self.item_to_id.setdefault(v, len(self.item_to_id) + 4)
             self.id_to_item[i] = v
-        self.max_length = max(len(vs), self.max_length)
+        self.max_length = max(len(values) + 2, self.max_length)
         self.empty = False
 
     def __str__(self) -> str:
-        return "{0}: {1}".format(self.name, self.type_name, len(self), self.max_length)    
+        return "{0}: {1} ({2} distinct values, max length {3})".format(self.name, self.type_name, len(self), self.max_length)
 
     def pack(self, v: Optional[Any]) -> List[int]:
-        items = (self.missing_value if v is None else [self.item_to_id.get(e, self.unknown_value) for e in self.split_func(v)[0:self.max_length]])
-        return items + [self.padding_value] * (self.max_length - len(items))
+        #items = (self.missing_value if v is None else [self.item_to_id.get(e, self.unknown_value) for e in self.split_func(v)[0:self.max_length]])
+        items = (self.missing_value if v is None else [self.item_to_id.get(e, self.unknown_value) for e in self.split_func(v)])
+        return [self.start_value] + items + [self.end_value] + [self.padding_value] * (self.max_length - len(items))
 
     def unpack(self, v: Any) -> Optional[Any]:
         return self.join_func([self.id_to_item.get(e, "") for e in v])
 
     def __len__(self) -> int:
-        return len(self.id_to_item) + 2
+        return len(self.id_to_item) + 4
               
     @property
     def stacked_type(self) -> torch.dtype:
@@ -325,7 +373,13 @@ class SequenceField(DataField[None, Any, List[int]]):
     @property
     def padding_value(self) -> int:
         return 0
-
+    @property
+    def start_value(self) -> int:
+        return 2
+    @property
+    def end_value(self) -> int:
+        return 3
+        
 class CharacterSequenceField(SequenceField):
     def __init__(self, name: str, **args: Any):
         super(CharacterSequenceField, self).__init__(name, list, "".join, **args)    

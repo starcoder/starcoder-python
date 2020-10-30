@@ -8,6 +8,7 @@ import numpy
 import scipy.sparse
 import gzip
 from torch.utils.data import DataLoader, Dataset
+from torch.nn import Dropout
 import functools
 import numpy
 
@@ -44,7 +45,8 @@ class GraphAutoencoder(Ensemble):
                  activation: Activation=torch.nn.functional.relu,
                  projected_size: Optional[int]=None,
                  base_entity_representation_size: int=8,
-                 device: Any=torch.device("cpu")) -> None:
+                 device: Any=torch.device("cpu"),
+                 train_neuron_dropout=0.0) -> None:
         """
         """
         super(GraphAutoencoder, self).__init__()
@@ -55,7 +57,7 @@ class GraphAutoencoder(Ensemble):
         self.base_entity_representation_size = base_entity_representation_size        
         self.autoencoder_shapes = autoencoder_shapes
         self.bottleneck_size = 0 if autoencoder_shapes in [[], None] else autoencoder_shapes[-1]
-        
+        self.dropout = Dropout(train_neuron_dropout)
         # An encoder for each field that turns its data type into a fixed-size representation
         field_encoders = {}
         for field_name, field_object in self.schema.data_fields.items():
@@ -185,6 +187,7 @@ class GraphAutoencoder(Ensemble):
             )
             autoencoder_inputs[entity_type.name][torch.isnan(autoencoder_inputs[entity_type.name])] = 0
         logger.debug("Shapes: %s", {k : v.shape for k, v in autoencoder_inputs.items()})
+        autoencoder_inputs = {k : self.dropout(v) for k, v in autoencoder_inputs.items()}
         return autoencoder_inputs    
 
     def run_first_autoencoder_layer(self, autoencoder_inputs: Dict[str, Tensor]) -> Tuple[Dict[str, Tensor], Dict[str, Tensor]]:

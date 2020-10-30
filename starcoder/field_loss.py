@@ -58,32 +58,22 @@ class CategoricalLoss(FieldLoss[Tensor, Tensor]):
 
 
 class NumericLoss(FieldLoss[Tensor, Tensor]):
-    def __init__(self, field: NumericField, reduction: str="none", **args) -> None:
-        #self.dims = args["dims"]
+    def __init__(self, field: NumericField, reduction: str="mean", **args) -> None:
+        self.dims = args["dims"]
         super(NumericLoss, self).__init__(field)
         self.reduction = reduction
     def __call__(self, guess: Tensor, gold: Tensor) -> Tensor:
-        #print(guess)
-        #print(guess.shape, gold.shape)
         guess = guess.flatten()
         gold = gold.flatten()
         selector = ~torch.isnan(gold) #.to(device=guess.device)
-        #bselector = ~torch.isnan(guess) #.to(device=guess.device)
-        #selector = aselector & bselector
-        #print(aselector, bselector, selector)
-        #if selector.tolist() != bselector.tolist():
-            #print(guess, gold)
-            #print(selector, bselector)
-        #    print(selector != bselector)
-        #    raise Exception()
-        #raise Exception()
         retval = torch.nn.functional.mse_loss(torch.masked_select(guess, selector), torch.masked_select(gold, selector), reduction=self.reduction)
-        #print(retval)
-        #print(gold)
         return retval
 
+class ScalarLoss(NumericLoss):
+    def __init__(self, field: NumericField, reduction: str="none", **args) -> None:
+        super(ScalarLoss, self).__init__(field, reduction, dims=1, **args)
 
-class ScalarLoss(FieldLoss[Tensor, Tensor]):
+class SScalarLoss(FieldLoss[Tensor, Tensor]):
     def __init__(self, field: NumericField, reduction: str="none") -> None:
         super(ScalarLoss, self).__init__(field)
         self.reduction = reduction

@@ -39,59 +39,51 @@ class CategoricalDecoder(FieldDecoder):
     def normalize(self, v):
         return numpy.array(v).argmax(1)
         
-class NumericDecoder(FieldDecoder):
-    def __init__(self, field: NumericField, input_size: int, activation: Activation, **args: Any) -> None:
-        self.dims = args["dims"]
-        super(NumericDecoder, self).__init__()
-        self._linear = torch.nn.Linear(input_size, self.dims)
-        self.activation = activation
-    def forward(self, x: Tensor) -> Tensor:
-        retval = self.activation(self._linear(x))
-        return retval
-    @property
-    def input_size(self) -> int:
-        return self._linear.in_features
-    @property
-    def output_size(self) -> int:
-        return self._linear.out_features
-    def normalize(self, v):
-        return v
-
-class DistributionDecoder(NumericDecoder):
-    def __init__(self, field: DistributionField, input_size: int, activation: Activation, **args: Any) -> None:
-        args["dims"] = len(field)
-        super(DistributionDecoder, self).__init__(field, input_size, activation, **args)
-    
-class ScalarDecoder(FieldDecoder):
-    def __init__(self, field: NumericField, input_size: int, activation: Activation, **args: Any) -> None:
-        super(ScalarDecoder, self).__init__()
-        self._linear = torch.nn.Linear(input_size, 1)
-        self.activation = activation
-    def forward(self, x: Tensor) -> Tensor:
-        retval = self.activation(self._linear(x))
-        return retval
-    @property
-    def input_size(self) -> int:
-        return self._linear.in_features
-    @property
-    def output_size(self) -> int:
-        return self._linear.out_features
-    def normalize(self, v):
-        return v.flatten()
-
-# class DistributionDecoder(FieldDecoder):
-#     def __init__(self, field: DataField, input_size: int, activation: Activation, **args: Any) -> None:
-#         super(DistributionDecoder, self).__init__()
-#         self._linear = torch.nn.Linear(input_size, len(field.categories))
+# class NumericDecoder(FieldDecoder):
+#     def __init__(self, field: NumericField, input_size: int, activation: Activation, **args: Any) -> None:
+#         self.dims = args["dims"]
+#         super(NumericDecoder, self).__init__()
+#         self._linear = torch.nn.Linear(input_size, self.dims)
 #         self.activation = activation
 #     def forward(self, x: Tensor) -> Tensor:
-#         return torch.nn.functional.log_softmax(self.activation(self._linear(x)).squeeze(), dim=1)
+#         retval = self.activation(self._linear(x))
+#         return retval
 #     @property
 #     def input_size(self) -> int:
 #         return self._linear.in_features
 #     @property
 #     def output_size(self) -> int:
 #         return self._linear.out_features
+#     def normalize(self, v):
+#         return v
+class NumericDecoder(FieldDecoder):
+    def __init__(self, field: NumericField, input_size: int, activation: Activation, **args: Any) -> None:
+        super(NumericDecoder, self).__init__()
+        self.dims = args["dims"]
+        self.linear = torch.nn.Linear(input_size, input_size)
+        self.final = torch.nn.Linear(input_size, self.dims)
+        self.activation = activation
+    def forward(self, x: Tensor) -> Tensor:
+        retval = self.final(self.activation(self.linear(x)))
+        return retval
+    @property
+    def input_size(self) -> int:
+        return self.linear.in_features
+    @property
+    def output_size(self) -> int:
+        return self.dims
+    def normalize(self, v):
+        return v.flatten()
+
+class DistributionDecoder(NumericDecoder):
+    def __init__(self, field: DistributionField, input_size: int, activation: Activation, **args: Any) -> None:
+        args["dims"] = len(field)
+        super(DistributionDecoder, self).__init__(field, input_size, activation, **args)
+
+
+class ScalarDecoder(NumericDecoder):
+    def __init__(self, field: NumericField, input_size: int, activation: Activation, **args: Any) -> None:
+        super(ScalarDecoder, self).__init__(field, input_size, activation, dims=1)
 
 class AudioDecoder(FieldDecoder):
     def __init__(self, field: DataField, input_size: int, activation: Activation, **args: Any) -> None:
@@ -148,7 +140,7 @@ class SequenceDecoder(FieldDecoder):
         #sys.exit()
         #hs = args.get("hidden_size", 32)
         rnn_type = args.get("rnn_type", torch.nn.GRU)
-        self.max_length = 20
+        self.max_length = 100
         #self.max_length = field.max_length #args.get("rnn_max_decode", 100) #field.max_length)
         self._rnn = rnn_type(self.encoder._embeddings.embedding_dim, input_size, batch_first=True, bidirectional=False)
         #self._rnn = rnn_type(input_size, hs, batch_first=True, bidirectional=False)
@@ -177,7 +169,9 @@ class SequenceDecoder(FieldDecoder):
             #sys.exit()
             #out, x = self._rnn(retval[:, i, :].unsqueeze(1), x)
             out, x = self._rnn(iid.unsqueeze(1), x)
-            cout = torch.log_softmax(self._classifier(out).squeeze(), 1) #output[:, i, :])
+            cs = self._classifier(out)
+            #print(cs.shape)
+            cout = torch.log_softmax(cs.squeeze(1), 1) #output[:, i, :])
             
             #print(iid)
             #sys.exit()

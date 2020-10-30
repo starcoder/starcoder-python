@@ -5,11 +5,13 @@ from starcoder.dataset import Dataset
 from starcoder.entity import stack_entities, UnpackedEntity, PackedEntity, Index, ID
 from starcoder.adjacency import Adjacencies
 import torch
+import numpy
 import logging
 import tempfile
 import json
 import gzip
 import os
+import random
 
 logger = logging.getLogger("starcoder")
 
@@ -51,24 +53,62 @@ def run_over_components(model: GraphAutoencoder,
                         batch_size: int,
                         gpu: bool,
                         train: bool,
+                        field_dropout: float=0.0,
+                        neuron_dropout: float=0.0,
                         subselect: bool=False,
-                        strict: bool=True,
-                        mask_tests: Any=[]) -> Tuple[Any, Dict[Any, Any]]:
+                        strict: bool=True) -> Tuple[Any, Dict[Any, Any]]:
     old_mode = model.training
     model.train(train)
     loss_by_field: Dict[str, Any] = {}
+    score_by_field: Dict[str, Any] = {}
     loss = 0.0
     for batch_num, (full_entities, full_adjacencies) in enumerate(batchifier(data, batch_size)):
         logger.debug("Processing batch #%d", batch_num)
+        partial_entities = {}
+        indices = list(range(full_entities[data.schema.entity_type_field.name].shape[0]))
+        num_field_dropout = int(field_dropout * len(indices))
+
+        for field_name, field_values in full_entities.items():
+            random.shuffle(indices)
+        
+            if field_name in data.schema.data_fields:
+                partial_entities[field_name] = field_values.clone()
+                partial_entities[field_name][indices[:num_field_dropout]] = data.schema.data_fields[field_name].missing_value
+            else:
+                partial_entities[field_name] = field_values
+
         batch_loss_by_field = {}
         if gpu:
+            partial_entities = {k : v.cuda() if hasattr(v, "cuda") else v for k, v in partial_entities.items()}
             full_entities = {k : v.cuda() if hasattr(v, "cuda") else v for k, v in full_entities.items()}
             full_adjacencies = {k : v.cuda() for k, v in full_adjacencies.items()}
         optim.zero_grad()
-        reconstructions, norm, bottlenecks = model(full_entities, full_adjacencies)
+        reconstructions, norm, bottlenecks = model(partial_entities, full_adjacencies)
         for field, losses in compute_losses(model, full_entities, reconstructions, data.schema).items():
+            score_by_field[field] = score_by_field.get(field, [])
+            golds = full_entities[field]
+            #mask = (full_entities[field] != data.schema.data_fields[field].missing_value) & 
+            mask = (partial_entities[field] == data.schema.data_fields[field].missing_value) | partial_entities[field].isnan()
+            mask = mask & (full_entities[field] != data.schema.data_fields[field].missing_value)
+            #print(mask.shape, mask.sum())
+
+            if data.schema.json["data_fields"][field]["type"] == "categorical":
+                guesses = torch.argmax(reconstructions[field], 1)
+                guesses = torch.masked_select(guesses, mask)
+                golds = torch.masked_select(golds, mask)
+                #equal = torch.masked_select(golds, mask) == torch.masked_select(guesses, mask)
+                #print(equal.shape)
+                #vals = [1 if x else 0 for x in equal.squeeze().tolist()]
+                vals = [1 if x else 0 for x in (guesses == golds).squeeze().tolist()]
+                #val = 0.0 if equal.shape[0] == 0.0 else equal.sum() / float(equal.shape[0])
+            elif data.schema.json["data_fields"][field]["type"] == "scalar":
+                guesses = reconstructions[field].squeeze()
+                guesses = torch.masked_select(guesses, mask)
+                golds = torch.masked_select(golds, mask)
+                vals = ((golds - guesses)**2).squeeze().tolist()
+            score_by_field[field] += vals #[val] * mask.shape[0]
             if losses.shape[0] > 0:
-                batch_loss_by_field[field] = losses
+                batch_loss_by_field[field] = losses            
         logging.debug("Applying loss policy")
         batch_loss = loss_policy(batch_loss_by_field)
         loss += batch_loss.clone().detach()
@@ -82,9 +122,8 @@ def run_over_components(model: GraphAutoencoder,
             loss_by_field[field] = loss_by_field.get(field, [])
             loss_by_field[field].append(v.clone().detach())
         logging.debug("Finished batch #%d", batch_num)
-        #sys.exit()
     model.train(old_mode)
-    return (loss, loss_by_field)
+    return (loss, loss_by_field, score_by_field)
 
 def apply_to_components(model: GraphAutoencoder,
                         batchifier: Any,
@@ -101,7 +140,47 @@ def apply_to_components(model: GraphAutoencoder,
             full_adjacencies = {k : v.cuda() for k, v in full_adjacencies.items()}
         yield model(full_entities, full_adjacencies)
     model.train(old_mode)
-    #return (reconstructions, bottlenecks)
+
+
+# def apply_to_globally_masked_components(to_mask: List[str],
+#                                         model: GraphAutoencoder,
+#                                         batchifier: Any,
+#                                         data: Dataset,
+#                                         batch_size: int,
+#                                         gpu: bool) -> Generator[Tuple[Any, Dict[Any, Any]], None, None]:
+#     scores = [1.0]
+#     old_mode = model.training
+#     model.train(False)
+#     for batch_num, (full_entities, full_adjacencies) in enumerate(batchifier(data, batch_size)):
+#         logger.debug("Processing batch #%d", batch_num)        
+#         #batch_loss_by_field = {}
+#         masked_full_entities = {k : (v.copy() if isinstance(v, numpy.ndarray) else v.clone()) for k, v in full_entities.items()}
+#         for field in to_mask:
+#             print(field)
+#             masked_full_entities[field] = torch.full_like(masked_full_entities[field], data.schema.data_fields[field].missing_value)
+#         if gpu:
+#             masked_full_entities = {k : v.cuda() if hasattr(v, "cuda") else v for k, v in masked_full_entities.items()}
+#             full_adjacencies = {k : v.cuda() for k, v in full_adjacencies.items()}
+#         ret = model(masked_full_entities, full_adjacencies)
+#     model.train(old_mode)
+#     return sum(scores) / len(scores)
+
+# def apply_to_locally_masked_components(to_mask: List[str],
+#                                        model: GraphAutoencoder,
+#                                        batchifier: Any,
+#                                        data: Dataset,
+#                                        batch_size: int,
+#                                        gpu: bool) -> Generator[Tuple[Any, Dict[Any, Any]], None, None]:
+#     old_mode = model.training
+#     model.train(False)
+#     for batch_num, (full_entities, full_adjacencies) in enumerate(batchifier(data, batch_size)):
+#         logger.debug("Processing batch #%d", batch_num)
+#         #batch_loss_by_field = {}
+#         if gpu:
+#             full_entities = {k : v.cuda() if hasattr(v, "cuda") else v for k, v in full_entities.items()}
+#             full_adjacencies = {k : v.cuda() for k, v in full_adjacencies.items()}
+#         yield model(full_entities, full_adjacencies)
+#     model.train(old_mode)
 
 
 def run_epoch(model: GraphAutoencoder,
@@ -112,33 +191,38 @@ def run_epoch(model: GraphAutoencoder,
               dev_data: Dataset,
               batch_size: int,
               gpu: bool,
-              mask_tests: Any=[],
+              train_field_dropout: float=0.0,
+              train_neuron_dropout: float=0.0,
+              dev_field_dropout: float=0.0,
               subselect: bool=False) -> Tuple[Any, Any, Any, Any]:
     model.train(True)
     logger.debug("Running over training data")
-    train_loss, train_loss_by_field = run_over_components(model,
-                                                          batchifier,
-                                                          optimizer, 
-                                                          loss_policy,
-                                                          train_data, 
-                                                          batch_size, 
-                                                          gpu,
-                                                          subselect=subselect,
-                                                          train=True,
-                                                          mask_tests=mask_tests,
+    train_loss, train_loss_by_field, train_score_by_field = run_over_components(
+        model,
+        batchifier,
+        optimizer, 
+        loss_policy,
+        train_data, 
+        batch_size, 
+        gpu,
+        subselect=subselect,
+        field_dropout=train_field_dropout,
+        neuron_dropout=train_neuron_dropout,
+        train=True
     )
     logger.debug("Running over dev data")
     model.train(False)
-    dev_loss, dev_loss_by_field = run_over_components(model,
-                                                      batchifier,
-                                                      optimizer, 
-                                                      loss_policy,
-                                                      dev_data, 
-                                                      batch_size, 
-                                                      gpu,
-                                                      subselect=subselect,
-                                                      train=False,
-                                                      mask_tests=mask_tests,
+    dev_loss, dev_loss_by_field, dev_score_by_field = run_over_components(
+        model,
+        batchifier,
+        optimizer, 
+        loss_policy,
+        dev_data, 
+        batch_size, 
+        gpu,
+        field_dropout=dev_field_dropout,
+        subselect=subselect,
+        train=False,
     )
 
     return (train_loss.clone().detach().cpu(),
@@ -148,6 +232,8 @@ def run_epoch(model: GraphAutoencoder,
             #{k : [v.clone().detach().cpu() for v in vv] for k, vv in train_loss_by_field.items()},
             dev_loss.clone().detach().cpu(),
             {k : sum([x.sum() for x in v]) for k, v in dev_loss_by_field.items()},
+            train_score_by_field,
+            dev_score_by_field,
             )
             #{k : [v.clone().detach().cpu() for v in vv] for k, vv in dev_loss_by_field.items()})
 

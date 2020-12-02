@@ -38,7 +38,7 @@ class Dataset(torch.utils.data.Dataset): # type: ignore
         for idx, entity in [(cast(Index, x), y) for x, y in enumerate(entities)]:
             entity_id = cast(ID, entity[self.schema.id_field.name])
             if entity_id in self.id_to_index:
-                raise Exception("Entity with id {} already exists".format(entity_id))
+                raise Exception("Entity with id '{}' already exists".format(entity_id))
             #assert entity_id not in self.id_to_index
             #assert idx not in self.index_to_id
             self.id_to_index[entity_id] = idx

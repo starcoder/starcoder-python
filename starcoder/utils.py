@@ -39,6 +39,7 @@ def compute_losses(model: GraphAutoencoder,
             logger.debug("Computing losses for field %s of type %s", field.name, field.type_name)
             reconstruction_values = reconstructions[field.name]
             field_losses = model.field_losses[field.name](reconstruction_values, field_values)
+            #print(field_name, field_losses)
             mask = ~torch.isnan(field_losses)
             losses[field.name] = torch.masked_select(field_losses, mask)
     logger.debug("Finished computing all losses")
@@ -71,9 +72,10 @@ def run_over_components(model: GraphAutoencoder,
         for field_name, field_values in full_entities.items():
             random.shuffle(indices)
         
-            if field_name in data.schema.data_fields:
+            if field_name in data.schema.data_fields and False:
                 partial_entities[field_name] = field_values.clone()
-                partial_entities[field_name][indices[:num_field_dropout]] = data.schema.data_fields[field_name].missing_value
+                partial_entities[field_name][indices[:num_field_dropout]] = 0 if data.schema.data_fields[field_name].stacked_type == torch.int64 else float("nan")
+                #data.schema.data_fields[field_name].missing_value
             else:
                 partial_entities[field_name] = field_values
 
@@ -88,25 +90,28 @@ def run_over_components(model: GraphAutoencoder,
             score_by_field[field] = score_by_field.get(field, [])
             golds = full_entities[field]
             #mask = (full_entities[field] != data.schema.data_fields[field].missing_value) & 
-            mask = (partial_entities[field] == data.schema.data_fields[field].missing_value) | partial_entities[field].isnan()
-            mask = mask & (full_entities[field] != data.schema.data_fields[field].missing_value)
+            #print(partial_entities[field])
+            #print(field)
+            #mask = (partial_entities[field] == data.schema.data_fields[field].missing_value) | partial_entities[field].isnan()
+            #mask = mask & (full_entities[field] != data.schema.data_fields[field].missing_value)
             #print(mask.shape, mask.sum())
 
-            if data.schema.json["data_fields"][field]["type"] == "categorical":
-                guesses = torch.argmax(reconstructions[field], 1)
-                guesses = torch.masked_select(guesses, mask)
-                golds = torch.masked_select(golds, mask)
-                #equal = torch.masked_select(golds, mask) == torch.masked_select(guesses, mask)
-                #print(equal.shape)
-                #vals = [1 if x else 0 for x in equal.squeeze().tolist()]
-                vals = [1 if x else 0 for x in (guesses == golds).squeeze().tolist()]
-                #val = 0.0 if equal.shape[0] == 0.0 else equal.sum() / float(equal.shape[0])
-            elif data.schema.json["data_fields"][field]["type"] == "scalar":
-                guesses = reconstructions[field].squeeze()
-                guesses = torch.masked_select(guesses, mask)
-                golds = torch.masked_select(golds, mask)
-                vals = ((golds - guesses)**2).squeeze().tolist()
-            score_by_field[field] += vals #[val] * mask.shape[0]
+            # if data.schema.json["data_fields"][field]["type"] == "categorical":
+            #     guesses = torch.argmax(reconstructions[field], 1)
+            #     guesses = torch.masked_select(guesses, mask)
+            #     golds = torch.masked_select(golds, mask)
+            #     #equal = torch.masked_select(golds, mask) == torch.masked_select(guesses, mask)
+            #     #print(equal.shape)
+            #     #vals = [1 if x else 0 for x in equal.squeeze().tolist()]
+            #     print(guesses.shape, golds.shape)
+            #     vals = [1 if x else 0 for x in (guesses == golds).squeeze().tolist()]
+            #     #val = 0.0 if equal.shape[0] == 0.0 else equal.sum() / float(equal.shape[0])
+            # elif data.schema.json["data_fields"][field]["type"] == "scalar":
+            #     guesses = reconstructions[field].squeeze()
+            #     guesses = torch.masked_select(guesses, mask)
+            #     golds = torch.masked_select(golds, mask)
+            #     vals = ((golds - guesses)**2).squeeze().tolist()
+            # score_by_field[field] += vals #[val] * mask.shape[0]
             if losses.shape[0] > 0:
                 batch_loss_by_field[field] = losses            
         logging.debug("Applying loss policy")
@@ -129,7 +134,10 @@ def apply_to_components(model: GraphAutoencoder,
                         batchifier: Any,
                         data: Dataset,
                         batch_size: int,
-                        gpu: bool) -> Generator[Tuple[Any, Dict[Any, Any]], None, None]:
+                        gpu: bool,
+                        mask_field,
+                        mask_probability) -> Generator[Tuple[Any, Dict[Any, Any]], None, None]:
+    masking = None
     old_mode = model.training
     model.train(False)
     for batch_num, (full_entities, full_adjacencies) in enumerate(batchifier(data, batch_size)):
@@ -138,7 +146,7 @@ def apply_to_components(model: GraphAutoencoder,
         if gpu:
             full_entities = {k : v.cuda() if hasattr(v, "cuda") else v for k, v in full_entities.items()}
             full_adjacencies = {k : v.cuda() for k, v in full_adjacencies.items()}
-        yield model(full_entities, full_adjacencies)
+        yield model(full_entities, full_adjacencies) + (masking,)
     model.train(old_mode)
 
 

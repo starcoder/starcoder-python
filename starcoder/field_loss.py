@@ -1,5 +1,5 @@
 from starcoder.base import StarcoderObject
-from starcoder.field import DataField, CategoricalField, NumericField, SequenceField
+from starcoder.field import DataField, CategoricalField, NumericField, SequenceField, DistributionField
 import torch
 import logging
 from typing import Type, List, Dict, Set, Any, Callable, Iterator, Union, Tuple, Sequence, Sized, cast, TypeVar, Hashable, Generic
@@ -59,7 +59,7 @@ class CategoricalLoss(FieldLoss[Tensor, Tensor]):
 
 class NumericLoss(FieldLoss[Tensor, Tensor]):
     def __init__(self, field: NumericField, reduction: str="mean", **args) -> None:
-        self.dims = args["dims"]
+        #self.dims = args["dims"]
         super(NumericLoss, self).__init__(field)
         self.reduction = reduction
     def __call__(self, guess: Tensor, gold: Tensor) -> Tensor:
@@ -67,6 +67,25 @@ class NumericLoss(FieldLoss[Tensor, Tensor]):
         gold = gold.flatten()
         selector = ~torch.isnan(gold) #.to(device=guess.device)
         retval = torch.nn.functional.mse_loss(torch.masked_select(guess, selector), torch.masked_select(gold, selector), reduction=self.reduction)
+        return retval
+
+class DistributionLoss(FieldLoss[Tensor, Tensor]):
+    def __init__(self, field: DistributionField, reduction: str="mean", **args) -> None:
+        #self.dims = args["dims"]
+        super(DistributionLoss, self).__init__(field)
+        self.reduction = reduction
+    def __call__(self, guess: Tensor, gold: Tensor) -> Tensor:
+        #print(guess)
+        #print(gold)
+        #sys.exit()
+        guess = guess.flatten()
+        gold = gold.flatten()
+        selector = ~torch.isnan(gold) #.to(device=guess.device)
+        #return torch.Tensor([0.0])
+        #print(selector)
+        #sys.exit()
+        retval = torch.nn.functional.kl_div(torch.masked_select(guess, selector), torch.masked_select(gold, selector), reduction=self.reduction, log_target=True)
+        #retval = torch.nn.functional.mse_loss(torch.masked_select(guess, selector), torch.masked_select(gold, selector), reduction=self.reduction)
         return retval
 
 class ScalarLoss(NumericLoss):

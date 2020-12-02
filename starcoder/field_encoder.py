@@ -42,11 +42,26 @@ class NumericEncoder(FieldEncoder):
     def output_size(self) -> int:
         return self.dims
 
-class DistributionEncoder(NumericEncoder):
-    def __init__(self, field: DistributionField, activation: Activation, **args: Any) -> None:
-        args["dims"] = len(field)
+class DistributionEncoder(FieldEncoder):
+    def __init__(self, field: DistributionField, activation: Activation, **args: Any) -> None:        
+        self.dims = len(field)
         super(DistributionEncoder, self).__init__(field, activation, **args)
-        
+        self.activation = activation
+
+        self._output_size = 128
+        self._layerA = torch.nn.Linear(self.dims, self._output_size)
+        #self.linearB = torch.nn.Linear(self.dims, self.dims // 2)
+    @property
+    def input_size(self):
+        return self.dims
+    @property
+    def output_size(self):
+        return self._output_size
+    def forward(self, x):
+        #print(x.sum(1))
+        retval = self.activation(self._layerA(x))
+        return retval
+
 class ScalarEncoder(NumericEncoder):
     def __init__(self, field: ScalarField, activation: Activation, **args: Any) -> None:
         args["dims"] = 1
@@ -79,7 +94,10 @@ class ImageEncoder(FieldEncoder):
     def __init__(self, field: DataField, activation: Activation, **args: Any) -> None:
         super(ImageEncoder, self).__init__()        
     def forward(self, x: Tensor) -> Tensor:
-        retval = torch.as_tensor(torch.unsqueeze(x, 1), dtype=torch.float32, device=x.device)
+        #retval = torch.as_tensor(torch.unsqueeze(x, 1), dtype=torch.float32, device=x.device)
+        #retval = torch.as_tensor(x, dtype=torch.float32, device=x.device)
+        retval = x.reshape(x.shape[0], -1).sum(1).reshape(x.shape[0], 1)
+        #print(retval.shape)
         return retval
     @property
     def output_size(self) -> int:
@@ -98,41 +116,73 @@ class SequenceEncoder(FieldEncoder):
         self._rnn = rnn_type(es, hs, batch_first=True, bidirectional=False)
     def forward(self, x: Tensor) -> Tensor:
         logger.debug("Starting forward pass of SequenceEncoder for '%s'", self.field.name)        
+
+        # compute lengths of each sequence
         l = (x != 0).sum(1)
+
+        # truncate at the length of longest sequence
         x = x[:, 0:l.max()]
+
+        # determine which sequences are non-empty
         nonempty = l != 0
+
+        # keep the non-empty sequences and lengths
         x = x[nonempty]
+
+        # if no non-empty sequences, return zeros (which won't get gradients)
         if x.shape[0] == 0:
             return torch.zeros(size=(nonempty.shape[0], self.output_size), device=x.device)
+
+        # keep the non-empty sequence lengths
         l = l[nonempty]
+
+        # create tensor to hold outputs
         retval = torch.zeros(size=(nonempty.shape[0], self._hidden_size), device=l.device)
+
+        # create index tensor over batch
         index_space = torch.arange(0, x.shape[0], 1, device=x.device)
-        bucket_count = 20
+
+        # compute buckets
+        bucket_count = min(20, l.shape[0])
         bucket_size = int(x.shape[1] / float(bucket_count))
         buckets = torch.bucketize(l, torch.tensor([i * bucket_size for i in range(bucket_count)], device=x.device))
-        space = 0
-        actual = 0
+
+        # iterate over buckets
         for bucket in buckets.unique():
+
+            # create bucket mask over batch
             bucket_mask = buckets == bucket
+
+            # determine longest sequence in bucket
             subset_max_len = bucket * bucket_size
-            subset = x.index_select(0, index_space.masked_select(bucket_mask))[:, 0:subset_max_len]
+
+            # compute bucket indices into batch
+            bucket_indices = index_space.masked_select(bucket_mask)
+
+            # select bucket items and truncate to maximum length
+            subset = x.index_select(0, bucket_indices)[:, 0:subset_max_len]
+
+            # compute bucket item lengths (should just select from l...)
             subset_l = (subset != 0).sum(1)
+
+            # embed bucket
             subset_embs = self._embeddings(subset)
-            subset_pk = torch.nn.utils.rnn.pack_padded_sequence(subset_embs, subset_l, batch_first=True, enforce_sorted=False)
-            subset_output, subset_h = self._rnn(subset_pk)
-            subset_h = subset_h.squeeze(0)
-            subset_mask = bucket_mask.unsqueeze(1).expand((bucket_mask.shape[0], subset_h.shape[1]))
-            retval.masked_scatter_(subset_mask, subset_h)
-        return retval
-        embs = self._embeddings(x)
-        pk = torch.nn.utils.rnn.pack_padded_sequence(embs, l, batch_first=True, enforce_sorted=False)
-        output, h = self._rnn(pk)
-        h = h.squeeze(0)
-        retval = torch.zeros(size=(nonempty.shape[0], h.shape[1]), device=l.device)
-        mask = nonempty.unsqueeze(1).expand((nonempty.shape[0], h.shape[1]))
-        retval.masked_scatter_(mask, h)
+
+            if subset_embs.shape[1] > 0:
+                # pack bucket
+                subset_pk = torch.nn.utils.rnn.pack_padded_sequence(subset_embs, subset_l, batch_first=True, enforce_sorted=False)
+
+                # run RNN
+                subset_output, subset_h = self._rnn(subset_pk)
+
+                # get hidden state
+                subset_h = subset_h.squeeze(0)
+
+                # assign hidden states to return value
+                retval[bucket_indices] = subset_h
         logger.debug("Finished forward pass for SequenceEncoder")
         return retval
+
     @property
     def input_size(self) -> int:
         return cast(int, self._rnn.input_size)

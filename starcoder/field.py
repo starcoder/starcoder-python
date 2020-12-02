@@ -32,6 +32,7 @@ representation.
     def __init__(self, name: str, **args: Any) -> None:
         self.name = name
         self.type_name = args["type"]
+        self.args = args
         self.empty = True
 
     def __str__(self) -> str:
@@ -195,35 +196,49 @@ class ScalarField(DataField[None, float, float]):
     
 class DateField(NumericField):
     def pack(self, v):
-        try:
-            return float("nan") if v == None else datetime.strptime(v, "%d-%b-%Y").toordinal()
-        except:
-            return float("nan")
+        retval = float("nan")
+        for fmt in self.args["format"] if isinstance(self.args["format"], list) else [self.args["format"]]:
+            try:
+                retval = datetime.strptime(v, fmt).toordinal()
+            except:
+                pass
+        return retval
 
     def unpack(self, v):
         try:
-            return None if numpy.isnan(v) else date.fromordinal(int(v)).strftime("%d-%b-%Y")
+            for form in self.args["format"] if isinstance(self.args["format"], list) else [self.args["format"]]:
+                return None if numpy.isnan(v) or v < 1 else date.fromordinal(int(v)).strftime(form)
         except:
             return None
 
 class DateTimeField(NumericField):
     def pack(self, v):        
-        return float("nan") if v == None else v #datetime.strptime(v, "%d-%b-%Y").toordinal()
+        retval = float("nan")
+        for fmt in self.args["format"] if isinstance(self.args["format"], list) else [self.args["format"]]:
+            try:
+                retval = datetime.strptime(v, fmt).toordinal()
+            except:
+                pass
+        return retval
+        #return float("nan") if v == None else datetime.strptime(v, self.args["format"]).toordinal()
 
     def unpack(self, v):
-        return None if numpy.isnan(v) else v #date.fromordinal(int(v)).strftime("%d-%b-%Y")
+        try:
+            return None if numpy.isnan(v) or v < 1 else datetime.fromordinal(int(v)).strftime(self.args["format"])
+        except:
+            return None
 
 class ImageField(DataField[str, List[List[List[int]]], float]):
     #packed_type = torch.float32    
-    def __init__(self, name: str, data_path: str, width: int, height: int, channels: int, channel_size: int, **args: Any) -> None:
-        self.data_path = data_path
+    def __init__(self, name: str, width: int, height: int, channels: int, channel_size: int, **args: Any) -> None:
         self.width = width
         self.height = height
         self.channels = channels
         self.channel_size = channel_size
         super(ImageField, self).__init__(name, **args)
     def pack(self, v: Any) -> Any:
-        return numpy.random.random((self.width, self.height, self.channels)).tolist()
+        return 1.0
+        #return numpy.random.random((self.width, self.height, self.channels)).tolist()
     def unpack(self, v: Any) -> Any:
         return v
     @property
@@ -231,7 +246,7 @@ class ImageField(DataField[str, List[List[List[int]]], float]):
         return torch.float32    
     @property
     def missing_value(self) -> float:
-        return numpy.full((self.width, self.height, self.channels), float("nan")).tolist()
+        return float("nan") #numpy.full((self.width, self.height, self.channels), float("nan")).tolist()
     def __len__(self) -> int:
         return 1
     def observe_value(self, v: float) -> None:
@@ -240,8 +255,8 @@ class ImageField(DataField[str, List[List[List[int]]], float]):
 
 class AudioField(DataField[str, List[int], int]):
     packed_type = torch.float32
-    def __init__(self, name: str, data_path: str, channels: int, channel_size: int, **args: Any) -> None:
-        self.data_path = data_path
+    def __init__(self, name: str, channels: int, channel_size: int, **args: Any) -> None:
+        #self.data_path = data_path
         self.channels = channels
         self.channel_size = channel_size
         super(AudioField, self).__init__(name, **args)
@@ -254,7 +269,7 @@ class AudioField(DataField[str, List[int], int]):
         return torch.float32    
     @property
     def missing_value(self) -> float:
-        return numpy.full((1, self.channels), float("nan")).tolist()
+        return float("nan") #numpy.full((1, self.channels), float("nan")).tolist()
     def __len__(self) -> int:
         return 1
     def observe_value(self, v: float) -> None:
@@ -263,8 +278,8 @@ class AudioField(DataField[str, List[int], int]):
 
 class VideoField(DataField[str, List[List[List[List[int]]]], int]):
     packed_type = torch.float32        
-    def __init__(self, name: str, data_path: str, width: int, height: int, channels: int, channel_size: int, **args: Any) -> None:
-        self.data_path = data_path
+    def __init__(self, name: str, width: int, height: int, channels: int, channel_size: int, **args: Any) -> None:
+        #self.data_path = data_path
         self.width = width
         self.height = height
         self.channels = channels
@@ -279,7 +294,7 @@ class VideoField(DataField[str, List[List[List[List[int]]]], int]):
         return torch.float32    
     @property
     def missing_value(self) -> float:
-        return numpy.full((1000, self.width, self.height, self.channels), float("nan")).tolist()
+        return float("nan") #numpy.full((1000, self.width, self.height, self.channels), float("nan")).tolist()
     def __len__(self) -> int:
         return 1
     def observe_value(self, v: float) -> None:
@@ -353,6 +368,7 @@ class SequenceField(DataField[None, Any, List[int]]):
     def pack(self, v: Optional[Any]) -> List[int]:
         #items = (self.missing_value if v is None else [self.item_to_id.get(e, self.unknown_value) for e in self.split_func(v)[0:self.max_length]])
         items = (self.missing_value if v is None else [self.item_to_id.get(e, self.unknown_value) for e in self.split_func(v)])
+        #items = ([] if v is None else [self.item_to_id.get(e, self.unknown_value) for e in self.split_func(v)])
         return [self.start_value] + items + [self.end_value] + [self.padding_value] * (self.max_length - len(items))
 
     def unpack(self, v: Any) -> Optional[Any]:
@@ -423,20 +439,39 @@ class DistributionField(NumericField):
         return len(self.label_to_index)
 
     def pack(self, v):
-        return self.missing_value if v == None else [v.get(self.index_to_label[i], float("-inf")) for i in range(len(self.index_to_label))]
+        #return self.missing_value if v == None else [v.get(self.index_to_label[i], float("-inf")) for i in range(len(self.index_to_label))]
+        #retval = self.missing_value if v == None else [math.log(v.get(self.index_to_label[i], float(0.000000000000001))) for i in range(len(self.index_to_label))]
+        if self.is_log:
+            retval = self.missing_value if v == None else [v.get(self.index_to_label[i], 0.0) for i in range(len(self.index_to_label))]
+        else:
+            retval = self.missing_value if v == None else [math.log(v.get(self.index_to_label[i], float(0.000000000000000000000000000000000001))) for i in range(len(self.index_to_label))]
+        #print(sum(retval))
+        return retval
     
     def unpack(self, v):
         return {self.index_to_label[i] : v[i] for i in range(len(self.index_to_label))}
 
     def observe_value(self, value):
+        self.is_log = None
         self.empty = False
         for k, v in value.items():
+            if self.is_log == None:
+                if v > 0:
+                    self.is_log = False
+                elif v < 0:
+                    self.is_log = True
+            else:
+                if v > 0 and self.is_log == True:
+                    raise Exception("Saw positive value (%d), but expected log-probabilities", v)
+                elif v < 0 and self.is_log == False:
+                    raise Exception("Saw negative value (%d), but expected probabilities", v)
             i = self.label_to_index.setdefault(k, len(self.label_to_index))
             self.index_to_label[i] = k
 
     @property
     def missing_value(self):
-        return [float("nan") for i in range(len(self.index_to_label))]
+        return [0.0 for i in range(len(self.index_to_label))]
+        #return [float("nan") for i in range(len(self.index_to_label))]
 
     @property
     def stacked_type(self):

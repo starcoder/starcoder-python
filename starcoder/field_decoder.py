@@ -73,17 +73,24 @@ class NumericDecoder(FieldDecoder):
     def output_size(self) -> int:
         return self.dims
     def normalize(self, v):
-        return v.flatten()
+        return v
+
 
 class DistributionDecoder(NumericDecoder):
     def __init__(self, field: DistributionField, input_size: int, activation: Activation, **args: Any) -> None:
         args["dims"] = len(field)
         super(DistributionDecoder, self).__init__(field, input_size, activation, **args)
+    def forward(self, x: Tensor) -> Tensor:
+        retval = torch.nn.functional.log_softmax(self.final(self.activation(self.linear(x))))
+        return retval
 
 
 class ScalarDecoder(NumericDecoder):
     def __init__(self, field: NumericField, input_size: int, activation: Activation, **args: Any) -> None:
         super(ScalarDecoder, self).__init__(field, input_size, activation, dims=1)
+    def normalize(self, v):
+        return v.flatten()
+
 
 class AudioDecoder(FieldDecoder):
     def __init__(self, field: DataField, input_size: int, activation: Activation, **args: Any) -> None:
@@ -153,6 +160,8 @@ class SequenceDecoder(FieldDecoder):
         #previous_value = torch.zeros(size=(x.shape[0],), device=x.device)
         #previous_value[self.field.start_value] = 1
         retval = torch.zeros(size=(x.shape[0], self.max_length, len(self.field)), device=x.device)
+        if x.shape[0] == 0:
+            return retval
         retval[:, 0, :] = self._start_val
         #print(retval[0])
         #print(retval[1])

@@ -75,10 +75,11 @@ def stack_entities(encoded_entities: PackedEntities, data_fields: Dict[str, Data
     full_entities: Dict[str, List[Any]] = {k : [] for k in field_names} #{k : [] for k in field_names}
     for entity in encoded_entities:
         for field_name in field_names:
-            if field_name in data_fields:
-                full_entities[field_name].append(entity.get(field_name, data_fields[field_name].missing_value))
+            if field_name in data_fields:                
+                full_entities[field_name].append(entity.get(field_name, data_fields[field_name].missing_value))    
             else:
                 full_entities[field_name].append(entity.get(field_name, False))
+
     return {k : numpy.array(v) if k not in data_fields else torch.tensor(v, dtype=data_fields[k].stacked_type) for k, v in full_entities.items()}
 
 def unstack_entities(stacked_entities: StackedEntities, schema) -> PackedEntities: #data_fields: Dict[str, DataField[Any, Any, Any]]) -> PackedEntities:

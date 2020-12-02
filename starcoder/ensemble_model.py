@@ -140,6 +140,7 @@ class GraphAutoencoder(Ensemble):
 
     def encode_fields(self, entities: StackedEntities) -> Dict[str, Tensor]:
         logger.debug("Encoding each input field to a fixed-length representation")
+        #print(entities["tweet_text"].sum(1))
         retval = {k : self.field_encoders[k](v) if k in self.field_encoders else v for k, v in entities.items()}
         return retval
     
@@ -160,8 +161,10 @@ class GraphAutoencoder(Ensemble):
                 )
                 autoencoder_input_lists[entity_type.name].append(vals)
                 #print(field_name, vals.shape)
+                nan_test = vals.reshape(vals.shape[0], -1 if vals.shape[0] != 0 else 0).sum(1)
+                #print(vals.shape, nan_test.shape)
                 inds = torch.where(
-                    torch.isnan(vals[:, 0]), 
+                    torch.isnan(nan_test), #vals[:, 0]), 
                     torch.zeros(size=(vals.shape[0], 1), device=self.device), 
                     torch.ones(size=(vals.shape[0], 1), device=self.device)
                 )

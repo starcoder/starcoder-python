@@ -58,6 +58,9 @@ class SampleComponents(Splitter):
         random.shuffle(component_indices)
         num_indices = len(component_indices)
         for num in [int(p * num_indices) for p in self.proportions]: # type: ignore
+            logging.info("Selecting %d components for a split", num)
             other_ids: List[ID] = sum([without_shared.component_ids(ci) for ci in component_indices[:num]], [])
+            logging.info("Reducing available components")
             component_indices = component_indices[num:]
+            logging.info("Yielding split")
             yield other_ids + shared_entities #[data.id_to_index[without_shared.index_to_id[i]] for i in other_indices] + shared_entities

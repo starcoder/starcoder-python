@@ -25,7 +25,7 @@ field_classes: Dict[str, Type[Field]] = {
 
 from starcoder.field_encoder import FieldEncoder, NumericEncoder, CategoricalEncoder, SequenceEncoder, ScalarEncoder, DistributionEncoder, ImageEncoder, VideoEncoder, AudioEncoder
 from starcoder.field_decoder import FieldDecoder, NumericDecoder, CategoricalDecoder, SequenceDecoder, ScalarDecoder, DistributionDecoder, ImageDecoder, VideoDecoder, AudioDecoder
-from starcoder.field_loss import FieldLoss, NumericLoss, CategoricalLoss, SequenceLoss, ScalarLoss, ImageLoss, VideoLoss, AudioLoss
+from starcoder.field_loss import FieldLoss, NumericLoss, CategoricalLoss, SequenceLoss, ScalarLoss, ImageLoss, VideoLoss, AudioLoss, DistributionLoss
 field_model_classes: Dict[Type[DataField], Tuple[Type[FieldEncoder], Type[FieldDecoder], Type[FieldLoss]]] = { # type: ignore[type-arg]
     ScalarField : (ScalarEncoder, ScalarDecoder, ScalarLoss),
     CategoricalField : (CategoricalEncoder, CategoricalDecoder, CategoricalLoss),
@@ -34,7 +34,7 @@ field_model_classes: Dict[Type[DataField], Tuple[Type[FieldEncoder], Type[FieldD
     DateField : (ScalarEncoder, ScalarDecoder, ScalarLoss),
     DateTimeField : (ScalarEncoder, ScalarDecoder, ScalarLoss),
     PlaceField : (partial(NumericEncoder, dims=2), partial(NumericDecoder, dims=2), partial(NumericLoss, dims=2)),
-    DistributionField : (DistributionEncoder, DistributionDecoder, NumericLoss),
+    DistributionField : (DistributionEncoder, DistributionDecoder, DistributionLoss),
     ImageField : (ImageEncoder, ImageDecoder, ImageLoss),
     VideoField : (VideoEncoder, VideoDecoder, VideoLoss),
     AudioField : (AudioEncoder, AudioDecoder, AudioLoss),    

@@ -1,5 +1,4 @@
 import logging
-#import random
 import numpy
 import scipy.sparse
 import torch
@@ -9,19 +8,18 @@ from starcoder.random import random
 from starcoder.configuration import Configurable
 from starcoder.schema import Schema
 from starcoder.dataset import Dataset
-from starcoder.field import Field, DataField
+from starcoder.property import Property
 from starcoder.entity import UnpackedEntity, PackedEntity, ID, Index, StackedEntities, stack_entities
 from starcoder.adjacency import Adjacency, Adjacencies, stack_adjacencies
 from abc import ABCMeta, abstractmethod
 from typing import Type, List, Dict, Set, Any, Union, Tuple, Iterator
 from torch import Tensor
-from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
 def components_to_batch(comps: List[Tuple[List[UnpackedEntity], Adjacencies]], data: Dataset) -> Tuple[StackedEntities, Adjacencies]:
     entities: List[UnpackedEntity] = sum([es for es, _ in comps], [])    
-    return (stack_entities([data.schema.pack(e) for e in entities], data.schema.data_fields),
+    return (stack_entities([data.schema.pack(e) for e in entities], data.schema.properties),
             stack_adjacencies([a for _, a in comps]))
 
 def dataset_to_batch(dataset: Dataset) -> Tuple[StackedEntities, Adjacencies]:
@@ -29,6 +27,7 @@ def dataset_to_batch(dataset: Dataset) -> Tuple[StackedEntities, Adjacencies]:
         [dataset.component(i) for i in range(dataset.num_components)],
         dataset
     )
+
 
 class Batchifier(Configurable, metaclass=ABCMeta):
     def __init__(self, rest: Any) -> None:
@@ -61,7 +60,6 @@ class SampleEntities(Batchifier):
 class SampleComponents(Batchifier):
     arguments = [
         {"dest" : "shared_entity_types", "nargs" : "*", "default" : [], "help" : "Entity types to be shared across batches"},
-        #{"dest" : "share_at_connectivity", "default" : 1.0, "type" : float, "help" : "Minimum percent-connectivity at which to always share an entity"},
     ]
     def __init__(self, vals: Any) -> None:
         super(SampleComponents, self).__init__(vals)
@@ -78,55 +76,24 @@ class SampleComponents(Batchifier):
         total = 0
         current_batch: List[ID] = []
         ids = []
-        #with tqdm(total=nonduplicate_data.num_entities) as bar:
         while len(components) > 0 or len(ids) > 0:
             if len(ids) == 0:
                 ids = [i for i in nonduplicate_data.component_ids(components[0])]
                 components = components[1:]
-            #if len(next_component_ids) > nonduplicate_entities_per_batch: #num_other_entities_per_batch:
-                # skip component that's too large?
-                #pass
             if len(current_batch) + len(ids) > nonduplicate_entities_per_batch:
                 if len(current_batch) > 0:
                     logger.debug("Returning batch of size %d", len(current_batch))
                     yield dataset_to_batch(data.subselect_entities(current_batch + entities_to_duplicate))
                 total += len(current_batch)
-                #bar.update(total)
-                #bar.set_description("".format(len(current_batch)))
                 current_batch = ids[:nonduplicate_entities_per_batch]
                 ids = ids[len(current_batch):]
-                #comps = [new_data.component(i) for i in range(new_data.num_components)]
-                #entities = sum([es for es, _ in comps], [])
-                #yield components_to_batch(comps, data)
-                #(stack_entities([data.schema.pack(e) for e in entities], data.schema.data_fields),
-                #       stack_adjacencies([a for _, a in comps]))
-                       #stack_batch(comps, data.schema)                
-                       #current_batch = ids
             else:
                 current_batch += ids
                 ids = []
-            #if len(current_batch) == num_other_entities_per_batch:
-            #    yield dataset_to_batch(data.subselect_entities(current_batch + entities_to_duplicate))
-                #comps = [new_data.component(i) for i in range(new_data.num_components)]
-                #yield components_to_batch(comps, data)
-                #entities = sum([es for es, _ in comps], [])                
-                #yield (stack_entities([data.schema.pack(e) for e in entities], data.schema.data_fields),
-                #       stack_adjacencies([a for _, a in comps]))
-                #yield stack_batch(comps, data.schema)
-           #     current_batch = []
-
         if len(current_batch) > 0:
             logger.debug("Returning batch of size %d", len(current_batch))            
             yield dataset_to_batch(data.subselect_entities(current_batch + entities_to_duplicate))
             total += len(current_batch)
-            #bar.update(total)
-        #new_data = 
-        #comps = [new_data.component(i) for i in range(new_data.num_components)]
-        #yield components_to_batch(comps, data)
-        #entities = sum([es for es, _ in comps], [])            
-        #yield (stack_entities([data.schema.pack(e) for e in entities], data.schema.data_fields),
-        #       stack_adjacencies([a for _, a in comps]))
-        #yield stack_batch(comps, data.schema)
             
 
 class SampleSnowflakes(Batchifier):
@@ -142,13 +109,13 @@ class SampleSnowflakes(Batchifier):
         other_entity_ids = [i for i in data.ids if i not in entities_to_duplicate]
         num_other_entities = batch_size - len(entities_to_duplicate)
         assert num_other_entities > 0
-        other_entities = data.subselect_entities(other_entity_ids) #[i for i in range(len(data)) if i not in entities_to_duplicate])
+        other_entities = data.subselect_entities(other_entity_ids)
         while len(other_entities) > 0:
             if len(other_entities) <= num_other_entities:
                 batch = data.subselect_entities_by_id(list(other_entities.id_to_index.keys()) + entities_to_duplicate)
                 other_entities = data.subselect_entities_by_id([])
             else:
-                batch_entities = [] #[i for i in entities_to_duplicate]
+                batch_entities = []
                 other_components = [i for i in range(other_entities.num_components)]
                 random.shuffle(other_components)
                 while len(other_components) > 0:
@@ -164,11 +131,10 @@ class SampleSnowflakes(Batchifier):
                         random.shuffle(poss)
                         hops.append(poss[:len(poss) // 2])
                     nonshared_entities = [other_entities.index_to_id[i] for i in set(sum(hops, []))]
-                    batch_entities += nonshared_entities #[other_entities.index_to_id[i] for i in set(sum(hops, []))]
+                    batch_entities += nonshared_entities
                 batch_entities = list(set(batch_entities))[0:num_other_entities] + entities_to_duplicate
 
                 batch = data.subselect_entities_by_id(batch_entities)
                 other_entities = other_entities.subselect_entities_by_id(batch_entities, invert=True)
             comps = [batch.component(i) for i in range(batch.num_components)]
             yield components_to_batch(comps, data)
-

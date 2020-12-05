@@ -24,9 +24,9 @@ I = TypeVar("I")
 U = TypeVar("U")
 P = TypeVar("P")
 
-class Field(StarcoderObject, metaclass=ABCMeta):
+class Property(StarcoderObject, metaclass=ABCMeta):
     """
-Field objects represent a type with particular semantics and its canonical
+Property objects represent a type with particular semantics and its canonical
 representation.
     """
     def __init__(self, name: str, **args: Any) -> None:
@@ -42,16 +42,16 @@ representation.
     @abstractproperty
     def missing_value(self) -> P: pass
 
-class MetaField(Field):
+class MetaProperty(Property):
     def __init__(self, name: str, **args: Any) -> None:
-        super(MetaField, self).__init__(name, **args)
+        super(MetaProperty, self).__init__(name, **args)
     @property
     def missing_value(self) -> P:
         raise Exception("'{}' is a meta-field, so missing values should never occur!".format(self.name))    
         
-class DataField(Field, Generic[I, U, P], Sized): 
+class DataProperty(Property, Generic[I, U, P], Sized): 
     def __init__(self, name: str, **args: Any) -> None:
-        super(DataField, self).__init__(name, **args)
+        super(DataProperty, self).__init__(name, **args)
     #@abstractmethod
     def load(self, v: I) -> U: pass
     @abstractmethod
@@ -67,16 +67,16 @@ class DataField(Field, Generic[I, U, P], Sized):
     @abstractproperty
     def stacked_type(self) -> dtype: pass
     
-class EntityTypeField(MetaField):
+class EntityTypeProperty(MetaProperty):
     def __init__(self, name: str, **args: Any) -> None:
-        super(EntityTypeField, self).__init__(name, type="entity_type", **args)
+        super(EntityTypeProperty, self).__init__(name, type="entity_type", **args)
     @property
     def elastic_field(self) -> Dict[str, Any]:
         return {"type" : "keyword"}
     
-class RelationshipField(Field):
+class RelationshipProperty(Property):
     def __init__(self, name: str, **args: Any) -> None:
-        super(RelationshipField, self).__init__(name, **args)
+        super(RelationshipProperty, self).__init__(name, **args)
         self.source_entity_type = args["source_entity_type"]        
         self.target_entity_type = args["target_entity_type"]
     def __str__(self) -> str:
@@ -88,22 +88,22 @@ class RelationshipField(Field):
     def missing_value(self) -> Any:
         return []
     
-class IdField(MetaField):
+class IdProperty(MetaProperty):
     @property
     def missing_value(self) -> Any:
         return None
     def __init__(self, name: str, **args: Any) -> None:
-        super(IdField, self).__init__(name, type="id", **args)
+        super(IdProperty, self).__init__(name, type="id", **args)
     #@property
     #def elastic_field(self) -> Dict[str, Any]:
     #    return {"type" : "keyword"}
 
     
-class NumericField(DataField[None, float, float]):
+class NumericProperty(DataProperty[None, float, float]):
     #packed_type = torch.float32
     #missing_value = float("nan")
     def __init__(self, name: str, **args: Any) -> None:
-        super(NumericField, self).__init__(name, **args)
+        super(NumericProperty, self).__init__(name, **args)
         self.max_val = None
         self.min_val = None
     def observe_value(self, v: float) -> None:
@@ -118,7 +118,7 @@ class NumericField(DataField[None, float, float]):
         #    self.empty = False
         #    return float(retval)
         #except Exception as e:
-        #    logger.error("Could not interpret '%s' for NumericField '%s'", v, self.name)
+        #    logger.error("Could not interpret '%s' for NumericProperty '%s'", v, self.name)
         #    raise e
     def unpack(self, v: List[float]) -> Optional[float]: # type: ignore
         return v
@@ -146,11 +146,11 @@ class NumericField(DataField[None, float, float]):
     #    return {"type" : "float"}
 
     
-class ScalarField(DataField[None, float, float]):
+class ScalarProperty(DataProperty[None, float, float]):
     #packed_type = torch.float32
     #missing_value = float("nan")
     def __init__(self, name: str, **args: Any) -> None:
-        super(ScalarField, self).__init__(name, **args)
+        super(ScalarProperty, self).__init__(name, **args)
         self.max_val = None
         self.min_val = None
     def observe_value(self, v: float) -> None:
@@ -165,7 +165,7 @@ class ScalarField(DataField[None, float, float]):
         #    self.empty = False
         #    return float(retval)
         #except Exception as e:
-        #    logger.error("Could not interpret '%s' for NumericField '%s'", v, self.name)
+        #    logger.error("Could not interpret '%s' for NumericProperty '%s'", v, self.name)
         #    raise e
     def unpack(self, v: List[float]) -> Optional[float]: # type: ignore
         return v
@@ -194,7 +194,7 @@ class ScalarField(DataField[None, float, float]):
 
 
     
-class DateField(NumericField):
+class DateProperty(NumericProperty):
     def pack(self, v):
         retval = float("nan")
         for fmt in self.args["format"] if isinstance(self.args["format"], list) else [self.args["format"]]:
@@ -211,7 +211,7 @@ class DateField(NumericField):
         except:
             return None
 
-class DateTimeField(NumericField):
+class DateTimeProperty(NumericProperty):
     def pack(self, v):        
         retval = float("nan")
         for fmt in self.args["format"] if isinstance(self.args["format"], list) else [self.args["format"]]:
@@ -228,14 +228,14 @@ class DateTimeField(NumericField):
         except:
             return None
 
-class ImageField(DataField[str, List[List[List[int]]], float]):
+class ImageProperty(DataProperty[str, List[List[List[int]]], float]):
     #packed_type = torch.float32    
     def __init__(self, name: str, width: int, height: int, channels: int, channel_size: int, **args: Any) -> None:
         self.width = width
         self.height = height
         self.channels = channels
         self.channel_size = channel_size
-        super(ImageField, self).__init__(name, **args)
+        super(ImageProperty, self).__init__(name, **args)
     def pack(self, v: Any) -> Any:
         return 1.0
         #return numpy.random.random((self.width, self.height, self.channels)).tolist()
@@ -253,13 +253,13 @@ class ImageField(DataField[str, List[List[List[int]]], float]):
         if v:
             self.empty = False
 
-class AudioField(DataField[str, List[int], int]):
+class AudioProperty(DataProperty[str, List[int], int]):
     packed_type = torch.float32
     def __init__(self, name: str, channels: int, channel_size: int, **args: Any) -> None:
         #self.data_path = data_path
         self.channels = channels
         self.channel_size = channel_size
-        super(AudioField, self).__init__(name, **args)
+        super(AudioProperty, self).__init__(name, **args)
     def pack(self, v: Any) -> Any:
         return numpy.random.random((1000, self.channels)).tolist()
     def unpack(self, v: Any) -> Any:
@@ -276,7 +276,7 @@ class AudioField(DataField[str, List[int], int]):
         if v:
             self.empty = False
 
-class VideoField(DataField[str, List[List[List[List[int]]]], int]):
+class VideoProperty(DataProperty[str, List[List[List[List[int]]]], int]):
     packed_type = torch.float32        
     def __init__(self, name: str, width: int, height: int, channels: int, channel_size: int, **args: Any) -> None:
         #self.data_path = data_path
@@ -284,7 +284,7 @@ class VideoField(DataField[str, List[List[List[List[int]]]], int]):
         self.height = height
         self.channels = channels
         self.channel_size = channel_size
-        super(VideoField, self).__init__(name, **args)
+        super(VideoProperty, self).__init__(name, **args)
     def pack(self, v: Any) -> Any:
         return numpy.random.random((1, self.width, self.height, self.channels)).tolist()
     def unpack(self, v: Any) -> Any:
@@ -301,11 +301,11 @@ class VideoField(DataField[str, List[List[List[List[int]]]], int]):
         if v:
             self.empty = False
 
-class CategoricalField(DataField[None, str, int]):
+class CategoricalProperty(DataProperty[None, str, int]):
     #missing_value = 0
     #packed_type = int
     def __init__(self, name: str, **args: Any) -> None:
-        super(CategoricalField, self).__init__(name, **args)
+        super(CategoricalProperty, self).__init__(name, **args)
         self.item_to_id: Dict[str, int] = {} #Missing() : self.missing_value}
         self.id_to_item: Dict[int, str] = {} #self.missing_value : Missing()}
          
@@ -345,9 +345,9 @@ class CategoricalField(DataField[None, str, int]):
     def missing_value(self) -> int:
         return 0
 
-class SequenceField(DataField[None, Any, List[int]]):
+class SequenceProperty(DataProperty[None, Any, List[int]]):
     def __init__(self, name: str, split_func, join_func, **args: Any) -> None:
-        super(SequenceField, self).__init__(name, **args)
+        super(SequenceProperty, self).__init__(name, **args)
         self.split_func = split_func
         self.join_func = join_func
         self.item_to_id: Dict[str, int] = {} #{None : 0}
@@ -372,7 +372,10 @@ class SequenceField(DataField[None, Any, List[int]]):
         return [self.start_value] + items + [self.end_value] + [self.padding_value] * (self.max_length - len(items))
 
     def unpack(self, v: Any) -> Optional[Any]:
-        return self.join_func([self.id_to_item.get(e, "") for e in v])
+        try:
+            return self.join_func([self.id_to_item.get(e, "") for e in v])
+        except:
+            return ""
 
     def __len__(self) -> int:
         return len(self.id_to_item) + 4
@@ -396,15 +399,15 @@ class SequenceField(DataField[None, Any, List[int]]):
     def end_value(self) -> int:
         return 3
         
-class CharacterSequenceField(SequenceField):
+class CharacterSequenceProperty(SequenceProperty):
     def __init__(self, name: str, **args: Any):
-        super(CharacterSequenceField, self).__init__(name, list, "".join, **args)    
+        super(CharacterSequenceProperty, self).__init__(name, list, "".join, **args)    
 
-class WordSequenceField(SequenceField):
+class WordSequenceProperty(SequenceProperty):
     def __init__(self, name: str, **args: Any):
-        super(WordSequenceField, self).__init__(name, str.split, " ".join, **args)
+        super(WordSequenceProperty, self).__init__(name, str.split, " ".join, **args)
 
-class PlaceField(NumericField):
+class PlaceProperty(NumericProperty):
     def __len__(self):
         return 2
 
@@ -429,11 +432,11 @@ class PlaceField(NumericField):
         return "{0}: {1}".format(self.name, self.type_name)    
 
 
-class DistributionField(NumericField):
+class DistributionProperty(NumericProperty):
     def __init__(self, name: str, **args: Any):
         self.label_to_index = {}
         self.index_to_label = {}
-        super(DistributionField, self).__init__(name, **args)
+        super(DistributionProperty, self).__init__(name, **args)
 
     def __len__(self):
         return len(self.label_to_index)

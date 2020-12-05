@@ -1,3 +1,11 @@
+"""A Projector is used to transform Autoencoder outputs for different entity-types, which
+are likely of different sizes, to a common size (by default, the maximum of the entity-type
+output sizes, to allow lossless propagation).  Their signature is:
+
+  (entity_type_boundary_size) -> (projected_size)
+
+where "projected_size" is constant throughout the model.
+"""
 import re
 import argparse
 import torch
@@ -16,6 +24,7 @@ from starcoder.base import StarcoderObject
 from starcoder.activation import Activation
 from typing import Type, List, Dict, Set, Any, Optional, Callable, cast
 from abc import ABCMeta, abstractmethod, abstractproperty
+
 
 class Projector(StarcoderObject, torch.nn.Module, metaclass=ABCMeta): # type: ignore[type-arg]
     def __init__(self) -> None:

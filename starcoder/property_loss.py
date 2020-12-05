@@ -1,5 +1,5 @@
 from starcoder.base import StarcoderObject
-from starcoder.field import DataField, CategoricalField, NumericField, SequenceField, DistributionField
+from starcoder.property import DataProperty, CategoricalProperty, NumericProperty, SequenceProperty, DistributionProperty
 import torch
 import logging
 from typing import Type, List, Dict, Set, Any, Callable, Iterator, Union, Tuple, Sequence, Sized, cast, TypeVar, Hashable, Generic
@@ -12,9 +12,9 @@ Gold = TypeVar("Gold")
 
 logger = logging.getLogger(__name__)
 
-class FieldLoss(StarcoderObject, Generic[Guess, Gold], metaclass=ABCMeta):
-    def __init__(self, field: DataField[Any, Any, Any]) -> None:
-        super(FieldLoss, self).__init__()
+class PropertyLoss(StarcoderObject, Generic[Guess, Gold], metaclass=ABCMeta):
+    def __init__(self, field: DataProperty[Any, Any, Any]) -> None:
+        super(PropertyLoss, self).__init__()
         self.field = field
     @abstractmethod
     def __call__(self, guess: Guess, gold: Gold) -> Tensor: pass
@@ -24,29 +24,27 @@ class FieldLoss(StarcoderObject, Generic[Guess, Gold], metaclass=ABCMeta):
     #@abstractmethod
     #def compute(self, guess: Any, gold: Any) -> Any: pass
 
+class NullLoss(PropertyLoss):
+    def __init__(self, property) -> None:
+        super(NullLoss, self).__init__(property)
+        #self.field = field
+    #@method
+    def __call__(self, guess: Guess, gold: Gold) -> Tensor:
+        return torch.tensor(0.0)
+    
+    
 #CategoricalLoss = torch.nn.NLLLoss
-class CategoricalLoss(FieldLoss[Tensor, Tensor]):
-    def __init__(self, field: CategoricalField, reduction: str="none") -> None:
+class CategoricalLoss(PropertyLoss[Tensor, Tensor]):
+    def __init__(self, field: CategoricalProperty, reduction: str="none") -> None:
         super(CategoricalLoss, self).__init__(field)
         self.reduction = reduction
         self.name = field.name
     def __call__(self, guess: Tensor, gold: Tensor) -> Tensor:
         #selector = gold != 0 #
         selector = torch.nonzero(gold).flatten().to(device=guess.device) #~torch.isnan(gold).to(device=guess.device)
-
         guess = torch.index_select(guess, 0, selector)
         gold = torch.index_select(gold, 0, selector)
-        
-        #print(guess, gold)
-        #print(selector.shape, guess.shape, gold.shape, ss.dtype)
-        #try:
         retval = torch.nn.functional.cross_entropy(guess, gold, reduction=self.reduction)
-        #except Exception as e:
-        #    print(guess, gold, self.name)
-        #    raise e
-
-        #retval = torch.nn.functional.cross_entropy(guess, gold, reduction=self.reduction)
-        #print(retval)
         return retval
 
 
@@ -57,8 +55,8 @@ class CategoricalLoss(FieldLoss[Tensor, Tensor]):
 # (batch_count x entity_representation_size :: Float) -> (batch_count :: Float)    
 
 
-class NumericLoss(FieldLoss[Tensor, Tensor]):
-    def __init__(self, field: NumericField, reduction: str="mean", **args) -> None:
+class NumericLoss(PropertyLoss[Tensor, Tensor]):
+    def __init__(self, field: NumericProperty, reduction: str="mean", **args) -> None:
         #self.dims = args["dims"]
         super(NumericLoss, self).__init__(field)
         self.reduction = reduction
@@ -69,8 +67,8 @@ class NumericLoss(FieldLoss[Tensor, Tensor]):
         retval = torch.nn.functional.mse_loss(torch.masked_select(guess, selector), torch.masked_select(gold, selector), reduction=self.reduction)
         return retval
 
-class DistributionLoss(FieldLoss[Tensor, Tensor]):
-    def __init__(self, field: DistributionField, reduction: str="mean", **args) -> None:
+class DistributionLoss(PropertyLoss[Tensor, Tensor]):
+    def __init__(self, field: DistributionProperty, reduction: str="mean", **args) -> None:
         #self.dims = args["dims"]
         super(DistributionLoss, self).__init__(field)
         self.reduction = reduction
@@ -89,11 +87,11 @@ class DistributionLoss(FieldLoss[Tensor, Tensor]):
         return retval
 
 class ScalarLoss(NumericLoss):
-    def __init__(self, field: NumericField, reduction: str="none", **args) -> None:
+    def __init__(self, field: NumericProperty, reduction: str="none", **args) -> None:
         super(ScalarLoss, self).__init__(field, reduction, dims=1, **args)
 
-class SScalarLoss(FieldLoss[Tensor, Tensor]):
-    def __init__(self, field: NumericField, reduction: str="none") -> None:
+class SScalarLoss(PropertyLoss[Tensor, Tensor]):
+    def __init__(self, field: NumericProperty, reduction: str="none") -> None:
         super(ScalarLoss, self).__init__(field)
         self.reduction = reduction
     def __call__(self, guess: Tensor, gold: Tensor) -> Tensor:
@@ -110,16 +108,16 @@ class SScalarLoss(FieldLoss[Tensor, Tensor]):
 
 # (batch_count x entity_representation_size :: Float) -> (batch_count :: Float)    
 
-#class DistributionLoss(FieldLoss):
-#    def __init__(self, field: DataField) -> None:
+#class DistributionLoss(PropertyLoss):
+#    def __init__(self, field: DataProperty) -> None:
 #        super(DistributionLoss, self).__init__(field)
 #    def compute(self, guess: Tensor, gold: Tensor) -> Tensor:
 #        return torch.nn.functional.kl_div(guess, gold)
 
 
 
-class AudioLoss(FieldLoss):
-    def __init__(self, field: DataField, reduction: str="none") -> None:
+class AudioLoss(PropertyLoss):
+    def __init__(self, field: DataProperty, reduction: str="none") -> None:
         super(AudioLoss, self).__init__(field)
         self.reduction = reduction
     def __call__(self, guess: Tensor, gold: Tensor) -> Tensor:
@@ -133,8 +131,8 @@ class AudioLoss(FieldLoss):
 
 
 
-class VideoLoss(FieldLoss):
-    def __init__(self, field: DataField, reduction: str="none") -> None:
+class VideoLoss(PropertyLoss):
+    def __init__(self, field: DataProperty, reduction: str="none") -> None:
         super(VideoLoss, self).__init__(field)
         self.reduction = reduction
     def __call__(self, guess: Tensor, gold: Tensor) -> Tensor:
@@ -147,8 +145,8 @@ class VideoLoss(FieldLoss):
 
 
 
-class ImageLoss(FieldLoss):
-    def __init__(self, field: DataField, reduction: str="none") -> None:
+class ImageLoss(PropertyLoss):
+    def __init__(self, field: DataProperty, reduction: str="none") -> None:
         super(ImageLoss, self).__init__(field)
         self.reduction = reduction
     def __call__(self, guess: Tensor, gold: Tensor) -> Tensor:
@@ -167,8 +165,8 @@ class ImageLoss(FieldLoss):
 # (batch_count x entity_representation_size :: Float) -> (batch_count x max_length x item_types :: Float)
 
 
-class SequenceLoss(FieldLoss[Tensor, Tensor]):
-    def __init__(self, field: SequenceField, reduction: str="none") -> None:
+class SequenceLoss(PropertyLoss[Tensor, Tensor]):
+    def __init__(self, field: SequenceProperty, reduction: str="none") -> None:
         super(SequenceLoss, self).__init__(field)
         self.reduction = reduction
     def __call__(self, x: Tensor, target: Tensor) -> Tensor:

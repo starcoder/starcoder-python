@@ -1,6 +1,6 @@
 import logging
 from starcoder.base import StarcoderObject
-from starcoder.field import DataField, CategoricalField, NumericField, SequenceField, DistributionField, ScalarField
+from starcoder.property import DataProperty, CategoricalProperty, NumericProperty, SequenceProperty, DistributionProperty, ScalarProperty
 from starcoder.activation import Activation
 import torch
 from typing import Type, List, Dict, Set, Any, Callable, Iterator, Union, Tuple, Sequence, Sized, cast
@@ -9,14 +9,14 @@ from torch import Tensor
 
 logger = logging.getLogger(__name__)
 
-class FieldEncoder(StarcoderObject, torch.nn.Module, metaclass=ABCMeta): # type: ignore[type-arg]
+class PropertyEncoder(StarcoderObject, torch.nn.Module, metaclass=ABCMeta): # type: ignore[type-arg]
     def __init__(self, *argv: Any) -> None:
-        super(FieldEncoder, self).__init__()
+        super(PropertyEncoder, self).__init__()
     @abstractmethod
     def forward(self, x: Tensor) -> Tensor: pass
 
-class CategoricalEncoder(FieldEncoder):
-    def __init__(self, field: CategoricalField, activation: Activation, **args: Any) -> None:
+class CategoricalEncoder(PropertyEncoder):
+    def __init__(self, field: CategoricalProperty, activation: Activation, **args: Any) -> None:
         super(CategoricalEncoder, self).__init__()
         self._embeddings = torch.nn.Embedding(num_embeddings=len(field), embedding_dim=args.get("embedding_size", 32))
     def forward(self, x: Tensor) -> Tensor:
@@ -29,8 +29,8 @@ class CategoricalEncoder(FieldEncoder):
     def output_size(self) -> int:
         return self._embeddings.embedding_dim
 
-class NumericEncoder(FieldEncoder):
-    def __init__(self, field: NumericField, activation: Activation, **args: Any) -> None:
+class NumericEncoder(PropertyEncoder):
+    def __init__(self, field: NumericProperty, activation: Activation, **args: Any) -> None:
         self.dims = args["dims"]
         super(NumericEncoder, self).__init__()
     def forward(self, x: Tensor) -> Tensor:
@@ -42,8 +42,8 @@ class NumericEncoder(FieldEncoder):
     def output_size(self) -> int:
         return self.dims
 
-class DistributionEncoder(FieldEncoder):
-    def __init__(self, field: DistributionField, activation: Activation, **args: Any) -> None:        
+class DistributionEncoder(PropertyEncoder):
+    def __init__(self, field: DistributionProperty, activation: Activation, **args: Any) -> None:        
         self.dims = len(field)
         super(DistributionEncoder, self).__init__(field, activation, **args)
         self.activation = activation
@@ -63,15 +63,15 @@ class DistributionEncoder(FieldEncoder):
         return retval
 
 class ScalarEncoder(NumericEncoder):
-    def __init__(self, field: ScalarField, activation: Activation, **args: Any) -> None:
+    def __init__(self, field: ScalarProperty, activation: Activation, **args: Any) -> None:
         args["dims"] = 1
         super(ScalarEncoder, self).__init__(field, activation, **args)
     def forward(self, x: Tensor) -> Tensor:
         retval = torch.as_tensor(torch.unsqueeze(x, 1), dtype=torch.float32, device=x.device)
         return retval
 
-class AudioEncoder(FieldEncoder):
-    def __init__(self, field: DataField, activation: Activation, **args: Any) -> None:
+class AudioEncoder(PropertyEncoder):
+    def __init__(self, field: DataProperty, activation: Activation, **args: Any) -> None:
         super(AudioEncoder, self).__init__()        
     def forward(self, x: Tensor) -> Tensor:
         retval = torch.as_tensor(torch.unsqueeze(x, 1), dtype=torch.float32, device=x.device)
@@ -80,8 +80,8 @@ class AudioEncoder(FieldEncoder):
     def output_size(self) -> int:
         return 1
 
-class VideoEncoder(FieldEncoder):
-    def __init__(self, field: DataField, activation: Activation, **args: Any) -> None:
+class VideoEncoder(PropertyEncoder):
+    def __init__(self, field: DataProperty, activation: Activation, **args: Any) -> None:
         super(VideoEncoder, self).__init__()        
     def forward(self, x: Tensor) -> Tensor:
         retval = torch.as_tensor(torch.unsqueeze(x, 1), dtype=torch.float32, device=x.device)
@@ -90,8 +90,8 @@ class VideoEncoder(FieldEncoder):
     def output_size(self) -> int:
         return 1
 
-class ImageEncoder(FieldEncoder):
-    def __init__(self, field: DataField, activation: Activation, **args: Any) -> None:
+class ImageEncoder(PropertyEncoder):
+    def __init__(self, field: DataProperty, activation: Activation, **args: Any) -> None:
         super(ImageEncoder, self).__init__()        
     def forward(self, x: Tensor) -> Tensor:
         #retval = torch.as_tensor(torch.unsqueeze(x, 1), dtype=torch.float32, device=x.device)
@@ -103,8 +103,9 @@ class ImageEncoder(FieldEncoder):
     def output_size(self) -> int:
         return 1
 
-class SequenceEncoder(FieldEncoder):
-    def __init__(self, field: SequenceField, activation: Activation, **args: Any) -> None:
+    
+class SequenceEncoder(PropertyEncoder):
+    def __init__(self, field: SequenceProperty, activation: Activation, **args: Any) -> None:
         super(SequenceEncoder, self).__init__()
         self.field = field
         es = args.get("embedding_size", 32)
@@ -189,3 +190,25 @@ class SequenceEncoder(FieldEncoder):
     @property
     def output_size(self) -> int:
         return cast(int, self._rnn.hidden_size)
+
+class DeepAveragingEncoder(SequenceEncoder):
+    def __init__(self, property, activation, **args):
+        super(DeepAveragingEncoder, self).__init__()
+        self.property = property
+        #es = args.get("embedding_size", 32)
+        #hs = args.get("hidden_size", 64)
+        #self._hidden_size = hs
+        #rnn_type = args.get("rnn_type", torch.nn.GRU)
+        #self.max_length = field.max_length #args.get("max_length", 1)
+        self._embeddings = torch.nn.Embedding(num_embeddings=len(field), embedding_dim=es)
+        self._rnn = rnn_type(es, hs, batch_first=True, bidirectional=False)
+    def forward(self, x: Tensor) -> Tensor:
+        logger.debug("Starting forward pass of SequenceEncoder for '%s'", self.field.name)        
+    @property
+    def input_size(self) -> int:
+        return cast(int, self._rnn.input_size)
+    @property
+    def output_size(self) -> int:
+        return cast(int, self._rnn.hidden_size)
+
+    

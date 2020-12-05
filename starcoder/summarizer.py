@@ -1,3 +1,12 @@
+"""A Summarizer creates a fixed-length representation of a variable number of bottlenecks from a single entity-type.
+
+Summarizers are needed because relationships are not one-to-one: for example, a Person 
+may have the relationship "owns" with more than one Car, but the Car-bottlenecks need to
+occupy a set number of values when added to a graph-aware Person Autoencoder.  Therefore, 
+each relationship gets an associated Summarizer with the signature:
+
+  (related_entity_count x related_bottleneck_size) -> (bottleneck_size)
+"""
 import re
 import argparse
 import torch
@@ -15,19 +24,17 @@ from torch.optim import Adam, SGD
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 import torch.nn.functional as F
-#from starcoder.data_fields import NumericField, DistributionField, CategoricalField, SequentialField, IntegerField, DateField
 from typing import Type, List, Dict, Set, Any, Callable, Tuple, Union
-from starcoder.base import StarcoderObject #Summarizer, Activation, DataField
+from starcoder.base import StarcoderObject
 from abc import ABCMeta, abstractproperty, abstractmethod
 from starcoder.activation import Activation
+
 
 class Summarizer(torch.nn.Module, metaclass=ABCMeta): # type: ignore[type-arg]
     def __init__(self) -> None:
         super(Summarizer, self).__init__()
-        pass
 
-# representations -> summary
-# (related_entity_count x bottleneck_size) -> (bottleneck_size)
+
 class RNNSummarizer(Summarizer):
     def __init__(self, input_size: int, activation: Activation, rnn_type: Callable[..., Callable[[Tensor], Tensor]]=torch.nn.GRU) -> None:
         super(RNNSummarizer, self).__init__()
@@ -49,14 +56,9 @@ class SingleSummarizer(Summarizer):
     def __init__(self, input_size: int, activation: Activation) -> None:
         super(SingleSummarizer, self).__init__()
         self._input_size = input_size
-        #self.layer = torch.nn.Identity()
     def forward(self, x: Tensor) -> Tensor:
-        #if x.shape[0] == 0:
-        #    return torch.zeros(shape=(self._input_size,))
-        #else:
         return x[0]
     def input_size(self) -> int:
         return self._input_size
     def output_size(self) -> int:
         return self._input_size
-

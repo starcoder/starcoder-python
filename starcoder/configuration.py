@@ -16,8 +16,6 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 import torch.nn.functional as F
 from abc import abstractmethod, abstractproperty, ABCMeta
-#from starcoder.fields import DataField
-#from starcoder.dataset import Dataset
 from typing import Type, List, Dict, Set, Any, Callable, Iterator, Union, Tuple, Sequence, Sized
 
 logger = logging.getLogger(__name__)

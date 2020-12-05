@@ -4,40 +4,41 @@ from functools import partial
 
 logger = logging.getLogger(__name__)
 
-from starcoder.field import Field, DataField, RelationshipField, IdField, EntityTypeField, NumericField, CategoricalField, WordSequenceField, CharacterSequenceField, DateField, PlaceField, DateTimeField, DistributionField, ImageField, VideoField, AudioField, ScalarField
-field_classes: Dict[str, Type[Field]] = {
-    "scalar" : ScalarField,
-    "distribution" : DistributionField,
-    "place" : PlaceField,
-    "date" : DateField,
-    "datetime" : DateTimeField,
-    "categorical" : CategoricalField,
-    "boolean" : CategoricalField,
-    "keyword" : CategoricalField,
-    "text" : CharacterSequenceField,
-    "relationship" : RelationshipField,
-    "image" : ImageField,
-    "video" : VideoField,
-    "audio" : AudioField,
-    "id" : IdField,
-    "entity_type" : EntityTypeField,
+from starcoder.property import Property, DataProperty, RelationshipProperty, IdProperty, EntityTypeProperty, NumericProperty, CategoricalProperty, WordSequenceProperty, CharacterSequenceProperty, DateProperty, PlaceProperty, DateTimeProperty, DistributionProperty, ImageProperty, VideoProperty, AudioProperty, ScalarProperty
+property_classes: Dict[str, Type[Property]] = {
+    "scalar" : ScalarProperty,
+    "distribution" : DistributionProperty,
+    "place" : PlaceProperty,
+    "date" : DateProperty,
+    "datetime" : DateTimeProperty,
+    "categorical" : CategoricalProperty,
+    "boolean" : CategoricalProperty,
+    "keyword" : CategoricalProperty,
+    "text" : CharacterSequenceProperty,
+    "relationship" : RelationshipProperty,
+    "image" : ImageProperty,
+    "video" : VideoProperty,
+    "audio" : AudioProperty,
+    "id" : IdProperty,
+    "entity_type" : EntityTypeProperty,
 }
 
-from starcoder.field_encoder import FieldEncoder, NumericEncoder, CategoricalEncoder, SequenceEncoder, ScalarEncoder, DistributionEncoder, ImageEncoder, VideoEncoder, AudioEncoder
-from starcoder.field_decoder import FieldDecoder, NumericDecoder, CategoricalDecoder, SequenceDecoder, ScalarDecoder, DistributionDecoder, ImageDecoder, VideoDecoder, AudioDecoder
-from starcoder.field_loss import FieldLoss, NumericLoss, CategoricalLoss, SequenceLoss, ScalarLoss, ImageLoss, VideoLoss, AudioLoss, DistributionLoss
-field_model_classes: Dict[Type[DataField], Tuple[Type[FieldEncoder], Type[FieldDecoder], Type[FieldLoss]]] = { # type: ignore[type-arg]
-    ScalarField : (ScalarEncoder, ScalarDecoder, ScalarLoss),
-    CategoricalField : (CategoricalEncoder, CategoricalDecoder, CategoricalLoss),
-    CharacterSequenceField : (SequenceEncoder, SequenceDecoder, SequenceLoss),
-    WordSequenceField : (SequenceEncoder, SequenceDecoder, SequenceLoss),
-    DateField : (ScalarEncoder, ScalarDecoder, ScalarLoss),
-    DateTimeField : (ScalarEncoder, ScalarDecoder, ScalarLoss),
-    PlaceField : (partial(NumericEncoder, dims=2), partial(NumericDecoder, dims=2), partial(NumericLoss, dims=2)),
-    DistributionField : (DistributionEncoder, DistributionDecoder, DistributionLoss),
-    ImageField : (ImageEncoder, ImageDecoder, ImageLoss),
-    VideoField : (VideoEncoder, VideoDecoder, VideoLoss),
-    AudioField : (AudioEncoder, AudioDecoder, AudioLoss),    
+from starcoder.property_encoder import PropertyEncoder, NumericEncoder, CategoricalEncoder, SequenceEncoder, ScalarEncoder, DistributionEncoder, ImageEncoder, VideoEncoder, AudioEncoder, DeepAveragingEncoder
+from starcoder.property_decoder import PropertyDecoder, NumericDecoder, CategoricalDecoder, SequenceDecoder, ScalarDecoder, DistributionDecoder, ImageDecoder, VideoDecoder, AudioDecoder, NullDecoder
+from starcoder.property_loss import PropertyLoss, NumericLoss, CategoricalLoss, SequenceLoss, ScalarLoss, ImageLoss, VideoLoss, AudioLoss, DistributionLoss, NullLoss
+property_model_classes: Dict[Type[DataProperty], Tuple[Type[PropertyEncoder], Type[PropertyDecoder], Type[PropertyLoss]]] = { # type: ignore[type-arg]
+    ScalarProperty : (ScalarEncoder, ScalarDecoder, ScalarLoss),
+    CategoricalProperty : (CategoricalEncoder, CategoricalDecoder, CategoricalLoss),
+    CharacterSequenceProperty : (SequenceEncoder, NullDecoder, NullLoss),
+    #CharacterSequenceProperty : (SequenceEncoder, SequenceDecoder, SequenceLoss),    
+    WordSequenceProperty : (SequenceEncoder, SequenceDecoder, SequenceLoss),
+    DateProperty : (ScalarEncoder, ScalarDecoder, ScalarLoss),
+    DateTimeProperty : (ScalarEncoder, ScalarDecoder, ScalarLoss),
+    PlaceProperty : (partial(NumericEncoder, dims=2), partial(NumericDecoder, dims=2), partial(NumericLoss, dims=2)),
+    DistributionProperty : (DistributionEncoder, DistributionDecoder, DistributionLoss),
+    ImageProperty : (ImageEncoder, ImageDecoder, ImageLoss),
+    VideoProperty : (VideoEncoder, VideoDecoder, VideoLoss),
+    AudioProperty : (AudioEncoder, AudioDecoder, AudioLoss),    
 }
 
 from starcoder.summarizer import Summarizer, SingleSummarizer, RNNSummarizer, MaxPoolSummarizer

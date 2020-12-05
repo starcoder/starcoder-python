@@ -15,7 +15,7 @@ import math
 import uuid
 from starcoder.random import random
 from starcoder.entity import UnpackedEntity, PackedEntity, ID, Index
-from starcoder.field import UnpackedValueType, PackedValueType
+from starcoder.property import UnpackedValueType, PackedValueType
 from starcoder.adjacency import Adjacency, Adjacencies
 from starcoder.schema import Schema
 from typing import List, Dict, Any, Tuple, Sequence, Hashable, MutableSequence, NewType, cast
@@ -28,15 +28,15 @@ class Dataset(torch.utils.data.Dataset): # type: ignore
     graph structure, particularly those that require connected components.
     A Dataset is, basically, a Schema and a list of JSON objects.
     """
-    def __init__(self, schema: Schema, entities: MutableSequence[Dict[str, Any]], strict: bool=False):
+    def __init__(self, schema: Schema, entities: MutableSequence[Dict[str, Any]], strict: bool=True):
         super(Dataset, self).__init__()
         self.schema = schema
-        known_field_names = schema.all_field_names
+        known_property_names = schema.all_property_names
         self.entities = []
         self.id_to_index: Dict[ID, Index] = {}
         self.index_to_id: Dict[Index, ID] = {}
         for idx, entity in [(cast(Index, x), y) for x, y in enumerate(entities)]:
-            entity_id = cast(ID, entity[self.schema.id_field.name])
+            entity_id = cast(ID, entity[self.schema.id_property.name])
             if entity_id in self.id_to_index:
                 raise Exception("Entity with id '{}' already exists".format(entity_id))
             #assert entity_id not in self.id_to_index
@@ -44,41 +44,42 @@ class Dataset(torch.utils.data.Dataset): # type: ignore
             self.id_to_index[entity_id] = idx
             self.index_to_id[idx] = entity_id #[self.schema.id_field.name]
             for k in entity.keys():
-                if k not in known_field_names and strict==True:
-                    raise Exception("Unknown field: '{}'".format(k))
+                if k not in known_property_names and strict==True:
+                    raise Exception("Unknown property: '{}'".format(k))
             self.entities.append(entity)
         self.edges: Dict[str, Dict[int, MutableSequence[int]]] = {}
         for entity in self.entities:
-            entity_type = entity[self.schema.entity_type_field.name]
+            entity_type = entity[self.schema.entity_type_property.name]
             if entity_type not in self.schema.entity_types:
                 continue
-            entity_id = entity[self.schema.id_field.name]
+            entity_id = entity[self.schema.id_property.name]
             source_index = self.id_to_index[entity_id]            
-            for relationship_field in self.schema.entity_types[entity_type].relationship_fields:
-                target_ids = entity.get(relationship_field, [])
+            for relationship in self.schema.entity_types[entity_type].relationships:
+                target_ids = entity.get(relationship, [])
                 for target in target_ids if isinstance(target_ids, list) else [target_ids]:
                     if target not in self.id_to_index:
-                        logger.debug("Could not find target %s for entity %s relationship %s", target, entity_id, relationship_field)
+                        if strict:
+                            raise Exception("Could not find target %s for entity %s relationship %s", target, entity_id, relationship)
                         continue
                     target_index = self.id_to_index[target]
-                    self.edges[relationship_field] = self.edges.get(relationship_field, {})
-                    self.edges[relationship_field][source_index] = self.edges[relationship_field].get(source_index, [])
-                    self.edges[relationship_field][source_index].append(target_index)
+                    self.edges[relationship] = self.edges.get(relationship, {})
+                    self.edges[relationship][source_index] = self.edges[relationship].get(source_index, [])
+                    self.edges[relationship][source_index].append(target_index)
         self.update_components()
         
     def get_type_ids(self, *type_names: Sequence[str]) -> List[ID]:
         retval = []
         for i in self.ids:
-            if self.entity(i)[self.schema.entity_type_field.name] in type_names:
+            if self.entity(i)[self.schema.entity_type_property.name] in type_names:
                 retval.append(i)
         return retval
 
     def subselect_entities_by_id(self, ids: Sequence[ID], invert: bool=False) -> "Dataset":
         if invert:
-            data = Dataset(self.schema, [self.entities[i] for i in range(len(self)) if self.index_to_id[cast(Index, i)] not in ids])
+            data = Dataset(self.schema, [self.entities[i] for i in range(len(self)) if self.index_to_id[cast(Index, i)] not in ids], strict=False)
         else:
             # this should never fail lookup, but...also, commit or don't to always using strings
-            data = Dataset(self.schema, [self.entities[self.id_to_index[eid]] for eid in ids if eid in self.id_to_index])
+            data = Dataset(self.schema, [self.entities[self.id_to_index[eid]] for eid in ids if eid in self.id_to_index], strict=False)
         return data
     
     def subselect_entities(self, ids: Sequence[ID], invert: bool=False) -> "Dataset":

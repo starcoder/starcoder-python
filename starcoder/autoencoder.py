@@ -32,6 +32,7 @@ class BasicAutoencoder(Autoencoder):
         decoding_layers = [torch.nn.Identity()] if len(decoding_layers) == 0 else decoding_layers
         self.encoding_layers = torch.nn.ModuleList(encoding_layers)
         self.decoding_layers = torch.nn.ModuleList(reversed(decoding_layers))
+        self.dropout = torch.nn.Dropout(0.1)
         self.activation = activation
     def forward(self, x: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
         y = x.clone()
@@ -41,6 +42,7 @@ class BasicAutoencoder(Autoencoder):
         bottleneck = x.clone().detach()
         for layer in self.decoding_layers:
             x = self.activation(layer(x))
+        x = self.dropout(x)
         return (x, bottleneck, None)
     @property
     def input_size(self) -> int:
@@ -51,3 +53,4 @@ class BasicAutoencoder(Autoencoder):
     @property
     def bottleneck_size(self) -> int:
         return self.sizes[-1]
+

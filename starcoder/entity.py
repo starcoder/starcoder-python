@@ -79,7 +79,17 @@ def stack_entities(encoded_entities, properties): # -> StackedEntities:
                 full_entities[property_name].append(entity.get(property_name, properties[property_name].missing_value))    
             else:
                 full_entities[property_name].append(entity.get(property_name, False))
+    #for k, v in full_entities.items():
+    #    if k in properties:
+    #        print(k, type(v))
+    #        print(v)
+    #        torch.tensor(v, dtype=properties[k].stacked_type)
 
+    # for k, v in full_entities.items():
+    #     if k in properties:
+    #         print(k)
+    #         print(v)
+    #         y = torch.tensor(v, dtype=properties[k].stacked_type)
     return {k : numpy.array(v) if k not in properties else torch.tensor(v, dtype=properties[k].stacked_type) for k, v in full_entities.items()}
 
 def unstack_entities(stacked_entities: StackedEntities, schema) -> PackedEntities: #properties: Dict[str, Property[Any, Any, Any]]) -> PackedEntities:

@@ -23,29 +23,34 @@ property_classes: Dict[str, Type[Property]] = {
     "entity_type" : EntityTypeProperty,
 }
 
-from starcoder.property_encoder import PropertyEncoder, NumericEncoder, CategoricalEncoder, SequenceEncoder, ScalarEncoder, DistributionEncoder, ImageEncoder, VideoEncoder, AudioEncoder, DeepAveragingEncoder
+from starcoder.property_encoder import PropertyEncoder, NumericEncoder, CategoricalEncoder, SequenceEncoder, ScalarEncoder, DistributionEncoder, ImageEncoder, VideoEncoder, AudioEncoder, DeepAveragingEncoder, NullEncoder
 from starcoder.property_decoder import PropertyDecoder, NumericDecoder, CategoricalDecoder, SequenceDecoder, ScalarDecoder, DistributionDecoder, ImageDecoder, VideoDecoder, AudioDecoder, NullDecoder
 from starcoder.property_loss import PropertyLoss, NumericLoss, CategoricalLoss, SequenceLoss, ScalarLoss, ImageLoss, VideoLoss, AudioLoss, DistributionLoss, NullLoss
 property_model_classes: Dict[Type[DataProperty], Tuple[Type[PropertyEncoder], Type[PropertyDecoder], Type[PropertyLoss]]] = { # type: ignore[type-arg]
     ScalarProperty : (ScalarEncoder, ScalarDecoder, ScalarLoss),
+    #ScalarProperty : (NullEncoder, NullDecoder, NullLoss),
+    #CategoricalProperty : (NullEncoder, NullDecoder, NullLoss),
     CategoricalProperty : (CategoricalEncoder, CategoricalDecoder, CategoricalLoss),
-    CharacterSequenceProperty : (SequenceEncoder, NullDecoder, NullLoss),
-    #CharacterSequenceProperty : (SequenceEncoder, SequenceDecoder, SequenceLoss),    
+    #CharacterSequenceProperty : (NullEncoder, NullDecoder, NullLoss),
+    CharacterSequenceProperty : (SequenceEncoder, SequenceDecoder, SequenceLoss),    
     WordSequenceProperty : (SequenceEncoder, SequenceDecoder, SequenceLoss),
+    #DateProperty : (NullEncoder, NullDecoder, NullLoss),
     DateProperty : (ScalarEncoder, ScalarDecoder, ScalarLoss),
     DateTimeProperty : (ScalarEncoder, ScalarDecoder, ScalarLoss),
     PlaceProperty : (partial(NumericEncoder, dims=2), partial(NumericDecoder, dims=2), partial(NumericLoss, dims=2)),
     DistributionProperty : (DistributionEncoder, DistributionDecoder, DistributionLoss),
     ImageProperty : (ImageEncoder, ImageDecoder, ImageLoss),
+    #ImageProperty : (ImageEncoder, NullDecoder, NullLoss),
     VideoProperty : (VideoEncoder, VideoDecoder, VideoLoss),
     AudioProperty : (AudioEncoder, AudioDecoder, AudioLoss),    
 }
 
-from starcoder.summarizer import Summarizer, SingleSummarizer, RNNSummarizer, MaxPoolSummarizer
+from starcoder.summarizer import Summarizer, SingleSummarizer, RNNSummarizer, MaxPoolSummarizer, DANSummarizer
 summarizer_classes: Dict[str, Type[Summarizer]] = {
     "single" : SingleSummarizer,
     "rnn" : RNNSummarizer,
     "maxpool" : MaxPoolSummarizer,
+    "dan" : DANSummarizer,
 }
 
 from starcoder.projector import Projector, MLPProjector

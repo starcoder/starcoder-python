@@ -9,6 +9,8 @@ from starcoder.base import StarcoderObject
 from typing import Type, List, Dict, Set, Any, Callable, Iterator, Union, Tuple, Sequence, Sized, TypeVar, Generic, Hashable, Optional
 from abc import ABCMeta, abstractmethod, abstractproperty
 from torch import Tensor, dtype
+import torchvision
+#import torchaudio
 
 logger = logging.getLogger(__name__)
 
@@ -229,7 +231,6 @@ class DateTimeProperty(NumericProperty):
             return None
 
 class ImageProperty(DataProperty[str, List[List[List[int]]], float]):
-    #packed_type = torch.float32    
     def __init__(self, name: str, width: int, height: int, channels: int, channel_size: int, **args: Any) -> None:
         self.width = width
         self.height = height
@@ -237,16 +238,32 @@ class ImageProperty(DataProperty[str, List[List[List[int]]], float]):
         self.channel_size = channel_size
         super(ImageProperty, self).__init__(name, **args)
     def pack(self, v: Any) -> Any:
-        return 1.0
-        #return numpy.random.random((self.width, self.height, self.channels)).tolist()
+        """
+        Parameters
+        ----------
+        v : tensor-like of shape :math: (\text{width}, \text{height}, \text{channels})
+
+        Returns
+        -------
+        Tensor of shape :math: (\text{channels}, \text{
+        """
+        retval = self.missing_value if v == None else torch.tensor(v).tolist()
+        return retval
+    
     def unpack(self, v: Any) -> Any:
-        return v
+        #v = torch.tensor(v)
+        #v = v * 255.0
+        #v = v.permute((2,1,0))
+        return v if isinstance(v, list) else v.tolist()
+    #numpy.asarray(self.to_pil(torch.tensor(v)), dtype=numpy.float64).tolist()
+        #return numpy.array(v).reshape(self.width, self.height, self.channels).tolist()
     @property
     def stacked_type(self) -> torch.dtype:
-        return torch.float32    
+        return torch.float32
     @property
     def missing_value(self) -> float:
-        return float("nan") #numpy.full((self.width, self.height, self.channels), float("nan")).tolist()
+        #    return numpy.full((self.channels, self.height, self.width), float("nan")).tolist()       
+        return numpy.full((self.width, self.height, self.channels), float("nan")).tolist()
     def __len__(self) -> int:
         return 1
     def observe_value(self, v: float) -> None:
@@ -447,7 +464,7 @@ class DistributionProperty(NumericProperty):
         if self.is_log:
             retval = self.missing_value if v == None else [v.get(self.index_to_label[i], 0.0) for i in range(len(self.index_to_label))]
         else:
-            retval = self.missing_value if v == None else [math.log(v.get(self.index_to_label[i], float(0.000000000000000000000000000000000001))) for i in range(len(self.index_to_label))]
+            retval = self.missing_value if v == None else [math.log(v.get(self.index_to_label[i], 0.0) +  float(0.000000000000000000000000001)) for i in range(len(self.index_to_label))]
         #print(sum(retval))
         return retval
     

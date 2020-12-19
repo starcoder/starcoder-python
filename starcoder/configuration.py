@@ -17,6 +17,7 @@ from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 import torch.nn.functional as F
 from abc import abstractmethod, abstractproperty, ABCMeta
 from typing import Type, List, Dict, Set, Any, Callable, Iterator, Union, Tuple, Sequence, Sized
+from jsonpath_ng import jsonpath, parse
 
 logger = logging.getLogger(__name__)
 

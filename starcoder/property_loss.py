@@ -5,6 +5,8 @@ import logging
 from typing import Type, List, Dict, Set, Any, Callable, Iterator, Union, Tuple, Sequence, Sized, cast, TypeVar, Hashable, Generic
 from abc import ABCMeta, abstractmethod, abstractproperty
 from torch import Tensor
+import torchvision
+#import torchaudio
 
 Guess = TypeVar("Guess")
 Gold = TypeVar("Gold")
@@ -12,7 +14,7 @@ Gold = TypeVar("Gold")
 
 logger = logging.getLogger(__name__)
 
-class PropertyLoss(StarcoderObject, Generic[Guess, Gold], metaclass=ABCMeta):
+class PropertyLoss(StarcoderObject, Generic[Guess, Gold], torch.nn.Module, metaclass=ABCMeta):
     def __init__(self, field: DataProperty[Any, Any, Any]) -> None:
         super(PropertyLoss, self).__init__()
         self.field = field
@@ -146,14 +148,22 @@ class VideoLoss(PropertyLoss):
 
 
 class ImageLoss(PropertyLoss):
-    def __init__(self, field: DataProperty, reduction: str="none") -> None:
+    def __init__(self, field: DataProperty, reduction: str="mean") -> None:
         super(ImageLoss, self).__init__(field)
         self.reduction = reduction
     def __call__(self, guess: Tensor, gold: Tensor) -> Tensor:
+        #print(guess.shape)
+        #print(gold.shape)
         guess = guess.flatten()
-        gold = gold.flatten()
+        gold = gold.flatten()        
         selector = ~torch.isnan(gold)
-        retval = torch.nn.functional.mse_loss(torch.masked_select(guess, selector), torch.masked_select(gold, selector), reduction=self.reduction)
+        guess = torch.masked_select(guess, selector)
+        gold = torch.masked_select(gold, selector)
+        #print(guess)
+        #print(torch.isnan(gold).sum())
+        #print(torch.isnan(guess).sum())
+        #sys.exit()
+        retval = torch.nn.functional.mse_loss(guess, gold, reduction=self.reduction)
         return retval
     
 

@@ -51,6 +51,22 @@ class MaxPoolSummarizer(Summarizer):
     def forward(self, x: Tensor) -> Union[Tensor, Tuple[Tensor, Tensor]]:
         return self.layer(x)
 
+class DANSummarizer(Summarizer):
+    def __init__(self, input_size: int, activation: Activation) -> None:
+        super(DANSummarizer, self).__init__()
+        self.layers = []
+        self.sizes = [input_size, input_size, input_size]
+        for i in range(len(self.sizes) - 1):
+            self.layers.append(torch.nn.Linear(self.sizes[i], self.sizes[i + 1]))
+        self.layers = torch.nn.ModuleList(self.layers)
+        self.activation = activation
+        
+    def forward(self, x: Tensor) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+        x = torch.mean(x, 0)
+        for layer in self.layers:
+            x = self.activation(layer(x))
+        return x
+    
     
 class SingleSummarizer(Summarizer):
     def __init__(self, input_size: int, activation: Activation) -> None:

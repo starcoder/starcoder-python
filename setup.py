@@ -15,4 +15,5 @@ setup(name="starcoder",
       packages=["starcoder"],
       scripts=[],
       requires=["torch", "pytest", "sklearn", "scipy", "elasticsearch", "django", "requests", "xlrd", "pandas", "numpy"],
+      package_data={"starcoder" : "*.json"}
      )

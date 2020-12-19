@@ -41,7 +41,7 @@ constructed from in the "json" property.
             if entity_spec.get("ignore", False) == False:
                 rel_properties = set([k for k, v in self.relationships.items() if v.source_entity_type == entity_type])
                 rev_rel_properties = set([k for k, v in self.relationships.items() if v.target_entity_type == entity_type])
-                properties = set([k for k in entity_spec["properties"] if k in self.properties])
+                properties = set([k for k in entity_spec.get("properties", []) if k in self.properties])
                 self.entity_types[entity_type] = EntityType(entity_type,
                                                             properties,
                                                             rel_properties,

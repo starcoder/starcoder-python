@@ -32,18 +32,18 @@ def compute_losses(model: GraphAutoencoder,
     losses = {}
     for entity_type_name, entity_type in schema.entity_types.items():
         for property_name in entity_type.properties:
+            losses[property_name] = losses.get(property_name, [])
             property_values = entities[property_name]
-            #for property_name, property_values in entities.items():
-            #if property_name in schema.properties and property_name in reconstructions:
             property = schema.properties[property_name]
             logger.debug("Computing losses for property %s of type %s", property.name, property.type_name)
-            reconstruction_values = reconstructions[property.name]
-            property_losses = model.property_losses[property.name](reconstruction_values, property_values)
-            #print(property_name, property_losses)
-            mask = ~torch.isnan(property_losses)
-            losses[property.name] = torch.masked_select(property_losses, mask)
+            for rcs in reconstructions if isinstance(reconstructions, list) else [reconstructions]:
+                reconstruction_values = rcs[property.name]
+                property_losses = model.property_losses[property.name](reconstruction_values, property_values)
+                #print(property_name, property_losses)
+                mask = ~torch.isnan(property_losses)
+                losses[property.name].append(torch.masked_select(property_losses, mask).flatten())
     logger.debug("Finished computing all losses")
-    return losses
+    return {k : torch.cat(v) for k, v in losses.items()}
 
 
 def run_over_components(model: GraphAutoencoder,
@@ -57,6 +57,7 @@ def run_over_components(model: GraphAutoencoder,
                         property_dropout: float=0.0,
                         neuron_dropout: float=0.0,
                         subselect: bool=False,
+                        mask_properties=[],
                         strict: bool=True) -> Tuple[Any, Dict[Any, Any]]:
     old_mode = model.training
     model.train(train)
@@ -70,12 +71,15 @@ def run_over_components(model: GraphAutoencoder,
         num_property_dropout = int(property_dropout * len(indices))
 
         for property_name, property_values in full_entities.items():
-            random.shuffle(indices)
+            #random.shuffle(indices)
         
-            if property_name in data.schema.properties and False:
-                partial_entities[property_name] = property_values.clone()
-                partial_entities[property_name][indices[:num_property_dropout]] = 0 if data.schema.properties[property_name].stacked_type == torch.int64 else float("nan")
+            #if property_name in data.schema.properties and False:
+            #    partial_entities[property_name] = property_values.clone()
+            #    partial_entities[property_name][indices[:num_property_dropout]] = 0 if data.schema.properties[property_name].stacked_type == torch.int64 else float("nan")
                 #data.schema.properties[property_name].missing_value
+            #else:
+            if property_name in mask_properties:
+                partial_entities[property_name] = torch.zeros_like(property_values, device=property_values.device, dtype=torch.int64)
             else:
                 partial_entities[property_name] = property_values
 
@@ -135,14 +139,14 @@ def apply_to_components(model: GraphAutoencoder,
                         data: Dataset,
                         batch_size: int,
                         gpu: bool,
-                        mask_property,
+                        mask_properties,
                         mask_probability) -> Generator[Tuple[Any, Dict[Any, Any]], None, None]:
     masking = None
     old_mode = model.training
     model.train(False)
     for batch_num, (full_entities, full_adjacencies) in enumerate(batchifier(data, batch_size)):
-        logger.info("Processing batch #%d", batch_num)
-        #batch_loss_by_field = {}
+        logger.debug("Processing batch #%d", batch_num)
+        full_entities = {k : torch.full_like(v, 0) if k in mask_properties else v for k, v in full_entities.items()}
         if gpu:
             full_entities = {k : v.cuda() if hasattr(v, "cuda") else v for k, v in full_entities.items()}
             full_adjacencies = {k : v.cuda() for k, v in full_adjacencies.items()}
@@ -189,6 +193,129 @@ def apply_to_components(model: GraphAutoencoder,
 #             full_adjacencies = {k : v.cuda() for k, v in full_adjacencies.items()}
 #         yield model(full_entities, full_adjacencies)
 #     model.train(old_mode)
+from torch.optim import Adam, SGD
+def warmup(model,
+           batchifier,
+           scheduler,
+           train_data,
+           dev_data,
+           batch_size,
+           freeze,
+           gpu):
+    """
+    Pretrain each property encoder by projecting its output directly to the decoder input and reconstructing, with moderate dropout.
+    Optionally freeze the encoders.
+    """
+    for prop in model.schema.properties:
+        #if prop != "summary":
+        #    continue
+        logger.info("Warming up property '%s'", prop)
+
+        entity_types = [entity_type for entity_type, spec in model.schema.entity_types.items() if prop in spec.properties]
+        prop_encoder = model.property_encoders[prop]
+        prop_decoder = model.property_decoders[prop]
+        projector = torch.nn.Linear(prop_encoder.output_size, prop_decoder.input_size)
+        prop_loss = model.property_losses[prop]
+
+        class MyModule(torch.nn.ModuleList):
+            def __init__(self, items):
+                super(MyModule, self).__init__(items)
+                #self.linears = nn.ModuleList([nn.Linear(10, 10) for i in range(10)])
+
+            def forward(self, x):
+                # ModuleList can act as an iterable, or be indexed using ints
+                for i, l in enumerate(self):
+                    
+                    x = l(x)
+                return x
+        m = MyModule([prop_encoder, projector, prop_decoder])
+        optimizer = Adam(m.parameters(), lr=0.001)
+        sched = scheduler(10, optimizer, patience=5, verbose=True)
+        train_ids, dev_ids = [], []
+        for eid in train_data.ids:            
+            if train_data.entity(eid).get(prop, None) != None:
+                train_ids.append(eid)
+        limited_train_data = train_data.subselect_entities(train_ids)
+        for eid in limited_train_data.ids:
+            idx = limited_train_data.id_to_index[eid]
+            limited_train_data.entities[idx] = {k : v for k, v in limited_train_data.entities[idx].items() if k in [limited_train_data.schema.id_property.name, limited_train_data.schema.entity_type_property.name, prop]}
+        for eid in dev_data.ids:
+            if dev_data.entity(eid).get(prop, None) != None:
+                dev_ids.append(eid)
+        limited_dev_data = dev_data.subselect_entities(dev_ids)
+        for eid in limited_dev_data.ids:
+            idx = limited_dev_data.id_to_index[eid]
+            limited_dev_data.entities[idx] = {k : v for k, v in limited_dev_data.entities[idx].items() if k in [limited_dev_data.schema.id_property.name, limited_dev_data.schema.entity_type_property.name, prop]}
+
+        best_dev_loss = None
+        best_state = None
+        for epoch in range(20):
+            m.train(True)
+            loss_by_property: Dict[str, Any] = {}
+            score_by_property: Dict[str, Any] = {}
+            train_loss = 0.0
+            dev_loss = 0.0
+            for batch_num, (full_entities, full_adjacencies) in enumerate(batchifier(limited_train_data, batch_size)):
+                logger.debug("Processing batch #%d", batch_num)
+                if gpu:
+                    full_entities = {k : v.cuda() if hasattr(v, "cuda") else v for k, v in full_entities.items()}
+                optimizer.zero_grad()
+                out = m(full_entities[prop])
+                loss = prop_loss(out, full_entities[prop]).mean()
+                #enc = prop_encoder(full_entities[prop])
+                #proj = torch.nn.functional.relu(projector(enc))
+                #dec = prop_decoder(proj)
+                #loss = prop_loss(dec, full_entities[prop]).mean()
+                loss.backward()
+                optimizer.step()
+                train_loss += loss.detach()
+            m.train(False)
+            for batch_num, (full_entities, full_adjacencies) in enumerate(batchifier(limited_dev_data, batch_size)):
+                logger.debug("Processing batch #%d", batch_num)
+                if gpu:
+                    full_entities = {k : v.cuda() if hasattr(v, "cuda") else v for k, v in full_entities.items()}
+                enc = prop_encoder(full_entities[prop])
+                proj = torch.nn.functional.relu(projector(enc))
+                dec = prop_decoder(proj)
+                loss = prop_loss(dec, full_entities[prop]).mean()
+                dev_loss += loss.detach()
+                
+            logger.info("Warming '%s', Epoch %d: comparable train/dev loss = %.4f/%.4f",
+                        prop,
+                        epoch,
+                        train_loss,
+                        dev_loss
+                        )
+            reduce_rate, early_stop, new_best = sched.step(dev_loss)            
+            if new_best:
+                best_dev_loss = dev_loss
+                best_state = {k : v.clone().detach().cpu() for k, v in m.state_dict().items()}
+                logger.info("New best dev loss")
+                
+            if reduce_rate == True:
+                m.load_state_dict(best_state)
+            if early_stop == True:
+                logger.info("Stopping early after no improvement for 10 epochs")
+                #if torch.isnan(global_best_dev_loss) or local_best_dev_loss < global_best_dev_loss:
+                    #best_trace = current_trace
+                    #gbd = "inf" if torch.isnan(global_best_dev_loss) else global_best_dev_loss / dev_data.num_entities
+                    #logger.info("Random run #{}'s loss is current best ({:.4} < {:.4})".format(restart + 1, local_best_dev_loss, gbd))
+                    #global_best_dev_loss = local_best_dev_loss
+                    #global_best_state = local_best_state
+                break
+        m.load_state_dict(best_state)
+            #elif epoch == args.max_epochs:
+            #    logger.info("Stopping after reaching maximum epochs")
+            #    if torch.isnan(global_best_dev_loss) or local_best_dev_loss < global_best_dev_loss:
+            #        best_trace = current_trace
+            #        gbd = "inf" if torch.isnan(global_best_dev_loss) else global_best_dev_loss / dev_data.num_entities
+            #        logger.info("Random run #{}'s loss is current best ({:.4} < {:.4})".format(restart + 1, local_best_dev_loss / dev_data.num_entities, gbd))
+            #        global_best_dev_loss = local_best_dev_loss
+            #        global_best_state = local_best_state                     
+        #for _, param in prop_encoder.named_parameters():
+        #    param.requires_grad = False
+
+           
 
 
 def run_epoch(model: GraphAutoencoder,
@@ -202,6 +329,7 @@ def run_epoch(model: GraphAutoencoder,
               train_property_dropout: float=0.0,
               train_neuron_dropout: float=0.0,
               dev_property_dropout: float=0.0,
+              mask_properties=[],
               subselect: bool=False) -> Tuple[Any, Any, Any, Any]:
     model.train(True)
     logger.debug("Running over training data")
@@ -216,7 +344,8 @@ def run_epoch(model: GraphAutoencoder,
         subselect=subselect,
         property_dropout=train_property_dropout,
         neuron_dropout=train_neuron_dropout,
-        train=True
+        train=True,
+        mask_properties=mask_properties,
     )
     logger.debug("Running over dev data")
     model.train(False)
@@ -231,6 +360,7 @@ def run_epoch(model: GraphAutoencoder,
         property_dropout=dev_property_dropout,
         subselect=subselect,
         train=False,
+        mask_properties=mask_properties,
     )
 
     return (train_loss.clone().detach().cpu(),

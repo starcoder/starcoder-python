@@ -6,6 +6,8 @@ import torch
 from typing import Type, List, Dict, Set, Any, Callable, Iterator, Union, Tuple, Sequence, Sized, cast
 from abc import ABCMeta, abstractmethod, abstractproperty
 from torch import Tensor
+import torchvision
+#import torchaudio
 
 logger = logging.getLogger(__name__)
 
@@ -15,10 +17,23 @@ class PropertyEncoder(StarcoderObject, torch.nn.Module, metaclass=ABCMeta): # ty
     @abstractmethod
     def forward(self, x: Tensor) -> Tensor: pass
 
-class CategoricalEncoder(PropertyEncoder):
+class NullEncoder(PropertyEncoder):
     def __init__(self, field: CategoricalProperty, activation: Activation, **args: Any) -> None:
+        super(NullEncoder, self).__init__()
+    def forward(self, x):
+        retval = torch.zeros(size=(x.shape[0], 0), device=x.device)
+        return retval
+    @property
+    def input_size(self):
+        return 1
+    @property
+    def output_size(self):
+        return 0
+    
+class CategoricalEncoder(PropertyEncoder):
+    def __init__(self, property: CategoricalProperty, activation: Activation, **args: Any) -> None:
         super(CategoricalEncoder, self).__init__()
-        self._embeddings = torch.nn.Embedding(num_embeddings=len(field), embedding_dim=args.get("embedding_size", 32))
+        self._embeddings = torch.nn.Embedding(num_embeddings=len(property), embedding_dim=args.get("embedding_size", 32))
     def forward(self, x: Tensor) -> Tensor:
         retval = self._embeddings(x)
         return(retval)
@@ -31,10 +46,18 @@ class CategoricalEncoder(PropertyEncoder):
 
 class NumericEncoder(PropertyEncoder):
     def __init__(self, field: NumericProperty, activation: Activation, **args: Any) -> None:
-        self.dims = args["dims"]
         super(NumericEncoder, self).__init__()
+        self.dims = args["dims"]
+        self.layers = torch.nn.ModuleList(
+            [
+                torch.nn.Linear(1, 10),
+                torch.nn.Linear(10, 10)
+            ]
+        )
+        self.activation = activation
+        
     def forward(self, x: Tensor) -> Tensor:
-        return x
+        return self.activation(self.layers[1](self.activation(self.layers[0](x))))
     @property
     def input_size(self) -> int:
         return self.dims
@@ -90,18 +113,88 @@ class VideoEncoder(PropertyEncoder):
     def output_size(self) -> int:
         return 1
 
-class ImageEncoder(PropertyEncoder):
-    def __init__(self, field: DataProperty, activation: Activation, **args: Any) -> None:
-        super(ImageEncoder, self).__init__()        
+class _ImageEncoder(PropertyEncoder):
+    """Implementation of all-convolutional architecture.
+    """
+    def __init__(self, property: DataProperty, activation: Activation, **args: Any) -> None:
+        super(ImageEncoder, self).__init__()
+        self.model = torchvision.models.densenet161(pretrained=True)
+        for name, p in self.model.named_parameters():
+            p.requires_grad = False
+        self.model.features = self.model.features[:12]
+        #reductions = args.get("reductions", 0)
+        #layers = [torch.nn.Conv2d(3, 3, (3,3), stride=1, padding=1)]
+        #for i in range(reductions):
+        #    pass
+        #self.property = property
+        #self.layers = torch.nn.ModuleList(layers)
+        #self.activation = activation
     def forward(self, x: Tensor) -> Tensor:
-        #retval = torch.as_tensor(torch.unsqueeze(x, 1), dtype=torch.float32, device=x.device)
-        #retval = torch.as_tensor(x, dtype=torch.float32, device=x.device)
-        retval = x.reshape(x.shape[0], -1).sum(1).reshape(x.shape[0], 1)
-        #print(retval.shape)
+        """
+        Parameters
+        ----------
+        x : tensor of shape :math: (\text{batch}, \text{width}, \text{height}, \text{channels})
+
+        Returns
+        -------
+        Tensor of shape :math: (\text{batch}, \frac{\text{width} \times \text{height} \times \text{channels}}{2^\text{reductions}})
+        """
+        x = x.permute((0, 3, 2, 1))
+        for i, m in enumerate(self.model.features):
+            x = self.model.features[i](x)
+        x = x.mean(3).squeeze()
+        return x
+        index_space = torch.arange(0, x.shape[0], 1, device=x.device, dtype=torch.int64)
+        not_nan_mask = ~x.reshape(x.shape[0], -1).sum(1).isnan()
+        not_nan = index_space.masked_select(not_nan_mask)
+        x = x.index_select(0, not_nan)
+        for i in range(len(self.layers)):
+            x = self.activation(self.layers[i](x))
+        x = x.reshape(x.shape[0], self.output_size)
+        retval = torch.zeros(size=(not_nan_mask.shape[0], self.output_size), device=x.device)
+        retval[not_nan] = x
         return retval
     @property
     def output_size(self) -> int:
-        return 1
+        return 2208
+    
+    
+class ImageEncoder(PropertyEncoder):
+    """Implementation of all-convolutional architecture.
+    """
+    def __init__(self, property: DataProperty, activation: Activation, **args: Any) -> None:
+        super(ImageEncoder, self).__init__()
+        reductions = args.get("reductions", 0)
+        layers = [torch.nn.Conv2d(3, 3, (3,3), stride=1, padding=1)]
+        for i in range(reductions):
+            pass
+        self.property = property
+        self.layers = torch.nn.ModuleList(layers)
+        self.activation = activation
+    def forward(self, x: Tensor) -> Tensor:
+        """
+        Parameters
+        ----------
+        x : tensor of shape :math: (\text{batch}, \text{width}, \text{height}, \text{channels})
+
+        Returns
+        -------
+        Tensor of shape :math: (\text{batch}, \frac{\text{width} \times \text{height} \times \text{channels}}{2^\text{reductions}})
+        """
+        x = x.permute((0, 3, 2, 1))
+        index_space = torch.arange(0, x.shape[0], 1, device=x.device, dtype=torch.int64)
+        not_nan_mask = ~x.reshape(x.shape[0], -1).sum(1).isnan()
+        not_nan = index_space.masked_select(not_nan_mask)
+        x = x.index_select(0, not_nan)
+        for i in range(len(self.layers)):
+            x = self.activation(self.layers[i](x))
+        x = x.reshape(x.shape[0], self.output_size)
+        retval = torch.zeros(size=(not_nan_mask.shape[0], self.output_size), device=x.device)
+        retval[not_nan] = x
+        return retval
+    @property
+    def output_size(self) -> int:
+        return self.property.width * self.property.height * self.property.channels
 
     
 class SequenceEncoder(PropertyEncoder):

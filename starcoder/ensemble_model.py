@@ -1,3 +1,4 @@
+import importlib
 import pickle
 import re
 import sys
@@ -17,7 +18,7 @@ from torch.optim import Adam, SGD
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from starcoder.random import random
-from starcoder.summarizer import SingleSummarizer
+from starcoder.summarizer import SingleSummarizer, DANSummarizer, MaxPoolSummarizer
 from starcoder.autoencoder import BasicAutoencoder
 from starcoder.projector import MLPProjector
 from starcoder.activation import Activation
@@ -41,7 +42,7 @@ class GraphAutoencoder(Ensemble):
                  depth: int,
                  autoencoder_shapes: List[int],
                  reverse_relationships: bool=False,
-                 summarizers: Type[SingleSummarizer]=SingleSummarizer,
+                 summarizers: Type[SingleSummarizer]=DANSummarizer,
                  activation: Activation=torch.nn.functional.relu,
                  projected_size: Optional[int]=None,
                  base_entity_representation_size: int=8,
@@ -64,10 +65,13 @@ class GraphAutoencoder(Ensemble):
         # An encoder for each property that turns its data type into a fixed-size representation
         property_encoders = {}
         for property_name, property_object in self.schema.properties.items():
+            mod, cls = re.match(r"^(.*)\.([^\.]*)$", self.schema.json["properties"][property_name]["meta"]["encoder"]).groups()
+            property_encoder_class = getattr(importlib.import_module(mod), cls)
             property_type = type(property_object)
             if property_type not in property_model_classes:
                 raise Exception("There is no encoder architecture registered for property type '{}'".format(property_type))
-            property_encoders[property_name] = property_model_classes[property_type][0](property_object, activation)
+            print(property_encoder_class)
+            property_encoders[property_name] = property_encoder_class(property_object, activation)
         self.property_encoders = torch.nn.ModuleDict(property_encoders)
 
         # The size of an encoded entity is the sum of the base representation size, the encoded
@@ -106,25 +110,36 @@ class GraphAutoencoder(Ensemble):
             self.relationship_target_summarizers = torch.nn.ModuleDict(relationship_target_summarizers)
 
         # MLP for each entity type to project representations to a common size
-        self.projected_size = cast(int, projected_size if projected_size != None else max(self.boundary_sizes.values()))
+        self.projected_size = projected_size if projected_size != None else max(self.boundary_sizes.values()) * (self.depth + 1)
+        
         projectors = {}
         for entity_type in self.schema.entity_types.values():
-            boundary_size = self.boundary_sizes.get(entity_type.name, 0)
-            if self.depth > 0:
-                for _ in entity_type.relationships:
-                    boundary_size += self.bottleneck_size
-                if self.reverse_relationships:
-                    for _ in entity_type.reverse_relationships:
+            if self.depthwise_boost == "highway":
+                boundary_size = 0
+                for ae in entity_autoencoders[entity_type.name]:
+                    boundary_size += ae.output_size
+            else:
+                boundary_size = self.boundary_sizes.get(entity_type.name, 0)
+                if self.depth > 0:
+                    for _ in entity_type.relationships:
                         boundary_size += self.bottleneck_size
-            projectors[entity_type.name] = MLPProjector(boundary_size, self.projected_size, activation)
+                    if self.reverse_relationships:
+                        for _ in entity_type.reverse_relationships:
+                            boundary_size += self.bottleneck_size
+            if self.depthwise_boost == "cul-de-sac":
+                projectors[entity_type.name] = torch.nn.ModuleList([MLPProjector(self.boundary_sizes[entity_type.name], self.projected_size, activation)] + [MLPProjector(boundary_size, self.projected_size, activation) for _ in range(self.depth)])
+            else:
+                projectors[entity_type.name] = MLPProjector(boundary_size, self.projected_size, activation)
         self.projectors = torch.nn.ModuleDict(projectors)
-        
+
         # A decoder for each property that takes a projected representation and generates a value of the property's data type
         property_decoders = {}
         for property_name, property_object in self.schema.properties.items():
             property_type = type(property_object)
             input_size = self.projected_size #self.projected_size if self.depthwise_boost == "none" else self.projected_size * (self.depth + 1)
-            property_decoders[property_name] = property_model_classes[property_type][1](
+            mod, cls = re.match(r"^(.*)\.([^\.]*)$", self.schema.json["properties"][property_name]["meta"]["decoder"]).groups()
+            property_decoder_class = getattr(importlib.import_module(mod), cls)
+            property_decoders[property_name] = property_decoder_class(
                 property_object,
                 input_size,
                 activation,
@@ -135,8 +150,10 @@ class GraphAutoencoder(Ensemble):
         # A way to calculate loss for each property
         self.property_losses = {}
         for property_name, property_object in self.schema.properties.items():
+            mod, cls = re.match(r"^(.*)\.([^\.]*)$", self.schema.json["properties"][property_name]["meta"]["loss"]).groups()
+            property_loss_class = getattr(importlib.import_module(mod), cls)
             property_type = type(property_object)            
-            self.property_losses[property_name] = property_model_classes[property_type][2](property_object)            
+            self.property_losses[property_name] = property_loss_class(property_object)            
 
     def cuda(self, device: Any="cuda:0") -> "GraphAutoencoder":
         self.device = torch.device(device)
@@ -148,7 +165,6 @@ class GraphAutoencoder(Ensemble):
 
     def encode_properties(self, entities: StackedEntities) -> Dict[str, Tensor]:
         logger.debug("Encoding each input property to a fixed-length representation")
-        #print(entities["tweet_text"].sum(1))
         retval = {k : self.property_encoders[k](v) if k in self.property_encoders else v for k, v in entities.items()}
         return retval
     
@@ -162,15 +178,16 @@ class GraphAutoencoder(Ensemble):
             #            
             autoencoder_input_lists[entity_type.name] = [torch.zeros(size=(entity_indices[entity_type.name].shape[0], 8), dtype=torch.float32, device=self.device)]
             for property_name in entity_type.properties:
+                #
+                # select the property values of the appropriate entity-type
+                #
                 vals = torch.index_select(
                     encoded_properties[property_name], 
                     0, 
                     entity_indices[entity_type.name]
                 )
                 autoencoder_input_lists[entity_type.name].append(vals)
-                #print(property_name, vals.shape)
                 nan_test = vals.reshape(vals.shape[0], -1 if vals.shape[0] != 0 else 0).sum(1)
-                #print(vals.shape, nan_test.shape)
                 inds = torch.where(
                     torch.isnan(nan_test), #vals[:, 0]), 
                     torch.zeros(size=(vals.shape[0], 1), device=self.device), 
@@ -206,9 +223,7 @@ class GraphAutoencoder(Ensemble):
         bottlenecks = {}
         autoencoder_outputs = {}
         for entity_type in self.schema.entity_types.values():
-            #print(entity_type)
             entity_reps = autoencoder_inputs.get(entity_type.name, None)
-            #print(entity_reps)
             if entity_reps != None:
                 entity_outputs, bns, losses = self.entity_autoencoders[entity_type.name][0](autoencoder_inputs[entity_type.name]) # type: ignore
                 if entity_outputs != None:
@@ -263,22 +278,23 @@ class GraphAutoencoder(Ensemble):
             sh = list(autoencoder_outputs[entity_type.name].shape)
             sh[1] = 0
             other_reps = torch.cat(other_rep_list, 1) if len(other_rep_list) > 0 else torch.zeros(size=tuple(sh), device=self.device)
-            autoencoder_inputs[entity_type.name] = torch.cat([autoencoder_outputs[entity_type.name], other_reps], 1)
+            struct_autoencoder_inputs = {}
+            struct_autoencoder_inputs[entity_type.name] = torch.cat([autoencoder_outputs[entity_type.name], other_reps], 1)
             if depth > len(self.entity_autoencoders[entity_type.name]) - 1: # type: ignore
                 raise Exception()
                 logger.debug("At depth %d, while the model was trained for depth %d, so reusing final autoencoder",
                              depth + 1,
                              len(self._entity_autoencoders[entity_type.name]))
-                entity_outputs, bns, losses = self.entity_autoencoders[entity_type.name][-1](autoencoder_inputs[entity_type.name])
+                entity_outputs, bns, losses = self.entity_autoencoders[entity_type.name][-1](struct_autoencoder_inputs[entity_type.name])
             else:
-                entity_outputs, bns, losses = self.entity_autoencoders[entity_type.name][depth](autoencoder_inputs[entity_type.name]) # type: ignore
+                entity_outputs, bns, losses = self.entity_autoencoders[entity_type.name][depth](struct_autoencoder_inputs[entity_type.name]) # type: ignore
             autoencoder_outputs[entity_type.name] = entity_outputs
             #if entity_outputs.shape[1] != 0:
             #   bottlenecks[entity_indices[entity_type.name]] = bns
             
-            entity_reps = autoencoder_inputs.get(entity_type.name, None)
+            entity_reps = struct_autoencoder_inputs.get(entity_type.name, None)
             if entity_reps != None:
-                entity_outputs, bns, losses = self.entity_autoencoders[entity_type.name][depth](autoencoder_inputs[entity_type.name]) # type: ignore
+                entity_outputs, bns, losses = self.entity_autoencoders[entity_type.name][depth](struct_autoencoder_inputs[entity_type.name]) # type: ignore
                 if entity_outputs != None:
                     autoencoder_outputs[entity_type.name] = entity_outputs
                 if bns != None:
@@ -288,9 +304,21 @@ class GraphAutoencoder(Ensemble):
         return (bottlenecks, autoencoder_outputs)    
                     
     def project_autoencoder_outputs(self, autoencoder_outputs: Dict[str, Tensor]) -> Dict[str, Tensor]:
-        resized_autoencoder_outputs = {}
+        if self.depthwise_boost == "cul-de-sac":
+            rao = []
+            for d in range(self.depth + 1):
+                raod = {}
+                for entity_type_name, ae_output in autoencoder_outputs[d].items():
+                    raod[entity_type_name] = self.projectors[entity_type_name][d](ae_output)
+                rao.append(raod)
+            return rao
+
+        resized_autoencoder_outputs = {}        
         for entity_type_name, ae_output in autoencoder_outputs.items():
-            resized_autoencoder_outputs[entity_type_name] = self.projectors[entity_type_name](ae_output)                
+            if self.depthwise_boost == "highway":
+                resized_autoencoder_outputs[entity_type_name] = self.projectors[entity_type_name](ae_output)
+            else:
+                resized_autoencoder_outputs[entity_type_name] = self.projectors[entity_type_name](ae_output)
         return resized_autoencoder_outputs
     
     def decode_properties(self, resized_encoded_entities: Dict[str, Tensor]) -> Dict[str, Dict[str, Tensor]]:
@@ -304,20 +332,20 @@ class GraphAutoencoder(Ensemble):
         return reconstructions
     
     def assemble_entities(self, decoded_properties: Dict[str, Dict[str, Tensor]], entity_indices: Dict[str, Tensor]) -> Dict[str, Tensor]:
-       num = sum([len(v) for v in entity_indices.values()])
-       retval: Dict[str, Tensor] = {}
-       for entity_type_name, properties in decoded_properties.items():
-           indices = entity_indices[entity_type_name]
-           for property_name, property_values in properties.items():
-               retval[property_name] = retval.get(
-                   property_name, 
-                   torch.empty(
-                       size=(num,) + property_values.shape[1:],
-                       device=self.device,
-                   )
-               )
-               retval[property_name][indices] = property_values
-       return retval
+        num = sum([len(v) for v in entity_indices.values()])
+        retval: Dict[str, Tensor] = {}
+        for entity_type_name, properties in decoded_properties.items():
+            indices = entity_indices[entity_type_name]
+            for property_name, property_values in properties.items():
+                retval[property_name] = retval.get(
+                    property_name, 
+                    torch.empty(
+                        size=(num,) + property_values.shape[1:],
+                        device=self.device,
+                    )
+                )
+                retval[property_name][indices] = property_values
+        return retval
     
     def compute_indices(self, entities: StackedEntities) -> Tuple[Dict[str, Tensor], Dict[str, Tensor], Dict[Tuple[str, str], Tensor]]:
         entity_indices = {}
@@ -355,14 +383,47 @@ class GraphAutoencoder(Ensemble):
         rev_adjacencies = {k : v.T for k, v in adjacencies.items()}
         property_encodings = self.encode_properties(entities)
         encoded_entities = self.create_autoencoder_inputs(property_encodings, entity_indices)
+        all_ae_outputs = []        
         bottlenecks, encoded_entities = self.run_first_autoencoder_layer(encoded_entities)
+        all_ae_outputs.append(encoded_entities)
         for depth in range(1, self.depth + 1):
             bottlenecks, encoded_entities = self.run_structured_autoencoder_layer(depth,                
-                                                                                  encoded_entities,
+                                                                                  all_ae_outputs[-1],
                                                                                   prev_bottlenecks=bottlenecks,
                                                                                   adjacencies=adjacencies,
                                                                                   batch_index_to_entity_index=batch_index_to_entity_index,
                                                                                   entity_indices=entity_indices)
+            all_ae_outputs.append(encoded_entities)
+        if self.depthwise_boost == "highway":
+            encoded_entities = {}
+            for entity_type_name in list(all_ae_outputs[0].keys()):
+                encoded_entities[entity_type_name] = torch.cat(
+                    [out[entity_type_name] for out in all_ae_outputs],
+                    1
+                )
+        elif self.depthwise_boost == "cul-de-sac":
+            decoded_entities = []
+            resized_encoded_entities = self.project_autoencoder_outputs(all_ae_outputs)
+            for d in range(self.depth + 1):
+                decoded_properties = self.decode_properties(resized_encoded_entities[d])
+                decoded_entities.append(self.assemble_entities(decoded_properties, entity_indices))
+                normalized_entities = {k : self.property_decoders[k].normalize(v.cpu().detach()) for k, v in decoded_entities[-1].items()}
+                for k, v in entities.items():
+                    if k not in decoded_entities[d]:
+                        decoded_entities[d][k] = v
+                        normalized_entities[k] = v
+                bottlenecks_by_id = {}
+                for entity_type_name, bns in bottlenecks.items():
+                    ids = entities[self.schema.id_property.name][entity_indices[entity_type_name].cpu()]
+                    # strange how numpy.array can be a scalar here!
+                    if isinstance(ids, str):
+                        ids = [ids]
+                    for i, bn in zip(ids, bns):
+                        bottlenecks_by_id[i] = bn
+            logger.debug("Returning reconstructions, bottlenecks, and autoencoder I/O pairs")
+            return (decoded_entities, normalized_entities, bottlenecks_by_id)
+        else:
+            encoded_entities = all_ae_outputs[-1]
         resized_encoded_entities = self.project_autoencoder_outputs(encoded_entities)
         decoded_properties = self.decode_properties(resized_encoded_entities)
         decoded_entities = self.assemble_entities(decoded_properties, entity_indices)
@@ -373,7 +434,6 @@ class GraphAutoencoder(Ensemble):
                 normalized_entities[k] = v
         bottlenecks_by_id = {}
         for entity_type_name, bns in bottlenecks.items():
-            #print(entities[self.schema.id_property.name])
             ids = entities[self.schema.id_property.name][entity_indices[entity_type_name].cpu()]
             # strange how numpy.array can be a scalar here!
             if isinstance(ids, str):

@@ -1,147 +1,176 @@
 import importlib
-import pickle
-import re
-import sys
-import argparse
 import torch
-import json
 import numpy
-import scipy.sparse
-import gzip
 from torch.utils.data import DataLoader, Dataset
 from torch.nn import Dropout
-import functools
-import numpy
-
 import logging
 from torch.optim import Adam, SGD
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
-from starcoder.random import random
-from starcoder.summarizer import SingleSummarizer, DANSummarizer, MaxPoolSummarizer
-from starcoder.autoencoder import BasicAutoencoder
-from starcoder.projector import MLPProjector
-from starcoder.activation import Activation
-from starcoder.registry import property_model_classes, summarizer_classes, projector_classes
-from starcoder.adjacency import Adjacencies, Adjacency
-from starcoder.entity import UnpackedEntity, PackedEntity, StackedEntities, stack_entities, unstack_entities
-from typing import List, Dict, Any, Type, Optional, Union, cast, Tuple
-from starcoder.schema import Schema
-from torch import Tensor
 from starcoder.base import StarcoderObject
+from starcoder.utils import starport
 
 logger = logging.getLogger(__name__)
 
-class Ensemble(StarcoderObject, torch.nn.Module): # type: ignore[type-arg]
+
+class Ensemble(StarcoderObject, torch.nn.Module):
     def __init__(self) -> None:
         super(Ensemble, self).__init__()
 
+
 class GraphAutoencoder(Ensemble):
     def __init__(self,
-                 schema: Schema,
-                 depth: int,
-                 autoencoder_shapes: List[int],
-                 reverse_relationships: bool=False,
-                 summarizers: Type[SingleSummarizer]=DANSummarizer,
-                 activation: Activation=torch.nn.functional.relu,
-                 projected_size: Optional[int]=None,
-                 base_entity_representation_size: int=8,
-                 depthwise_boost="none",
-                 device: Any=torch.device("cpu"),
-                 train_neuron_dropout=0.0) -> None:
+                 schema,
+                 data,
+                 device=torch.device("cpu")
+             ):
         """
         """
         super(GraphAutoencoder, self).__init__()
-        self.reverse_relationships = reverse_relationships
         self.schema = schema
-        self.depth = depth
+        self.reverse_relationships = self.schema["meta"]["reverse_relationships"]
+        self.depth = self.schema["meta"]["depth"]
+        self.depthwise_boost = "highway"
         self.device = device
-        self.base_entity_representation_size = base_entity_representation_size        
-        self.autoencoder_shapes = autoencoder_shapes
-        self.bottleneck_size = 0 if autoencoder_shapes in [[], None] else autoencoder_shapes[-1]
-        self.dropout = Dropout(train_neuron_dropout)
-        self.depthwise_boost = depthwise_boost
-        
+        projected_size = None
+        # TODO: limit depth to longest path through network
+        # A class for each property that can manipulate its human and computer forms
+        self.property_objects = {}
+        for property_name, property_spec in self.schema["properties"].items():
+            property_class = starport(property_spec["meta"]["class"])
+            self.property_objects[property_name] = property_class(property_name, property_spec, data)
         # An encoder for each property that turns its data type into a fixed-size representation
         property_encoders = {}
-        for property_name, property_object in self.schema.properties.items():
-            mod, cls = re.match(r"^(.*)\.([^\.]*)$", self.schema.json["properties"][property_name]["meta"]["encoder"]).groups()
-            property_encoder_class = getattr(importlib.import_module(mod), cls)
-            property_type = type(property_object)
-            if property_type not in property_model_classes:
-                raise Exception("There is no encoder architecture registered for property type '{}'".format(property_type))
-            print(property_encoder_class)
-            property_encoders[property_name] = property_encoder_class(property_object, activation)
+        for property_name, property_spec in self.schema["properties"].items():
+            property_encoder_class = starport(property_spec["meta"]["encoder"])
+            property_encoders[property_name] = property_encoder_class(
+                self.property_objects[property_name]
+            )
         self.property_encoders = torch.nn.ModuleDict(property_encoders)
-
         # The size of an encoded entity is the sum of the base representation size, the encoded
         # sizes of its possible properties, and a binary indicator for the presence of each property.
         self.boundary_sizes = {}
-        for entity_type in self.schema.entity_types.values():
-            self.boundary_sizes[entity_type.name] = self.base_entity_representation_size
-            for property_name in entity_type.properties:
-                self.boundary_sizes[entity_type.name] += self.property_encoders[property_name].output_size + 1 # type: ignore
-
+        self.encoded_sizes = {}
+        for entity_type_name, entity_type_spec in self.schema["entity_types"].items():
+            self.boundary_sizes[entity_type_name] = 0
+            self.encoded_sizes[entity_type_name] = 0
+            for property_name in entity_type_spec["properties"]:
+                self.encoded_sizes[entity_type_name] += self.property_encoders[property_name].output_size
+                self.boundary_sizes[entity_type_name] += self.property_encoders[property_name].output_size
         # An autoencoder for each entity type and depth
-        # The first has input/output layers of size equal to the size of the corresponding entity's representation size
-        # The rest have input/output layers of that size plus a bottleneck size for each possible (normal or reverse) relationship
-        entity_autoencoders = {}
-        for entity_type in self.schema.entity_types.values():
-            boundary_size = self.boundary_sizes[entity_type.name]
-            entity_type_autoencoders = [BasicAutoencoder([boundary_size] + self.autoencoder_shapes, activation)]
-            for _ in entity_type.relationships:
-                boundary_size += self.bottleneck_size
-            if self.reverse_relationships:
-                for _ in entity_type.reverse_relationships:
-                    boundary_size += self.bottleneck_size
-            for depth in range(self.depth):
-                entity_type_autoencoders.append(BasicAutoencoder([boundary_size] + self.autoencoder_shapes, activation))
-            entity_autoencoders[entity_type.name] = torch.nn.ModuleList(entity_type_autoencoders)
-        self.entity_autoencoders = torch.nn.ModuleDict(entity_autoencoders)
-
-        # A summarizer for each relationship particant (source or target), to reduce one-to-many relationships to a fixed size
-        if self.depth > 0:
-            relationship_source_summarizers = {}
-            relationship_target_summarizers = {}
-            for relationship in self.schema.relationships.values():
-                relationship_source_summarizers[relationship.name] = summarizers(self.bottleneck_size, activation)
-                relationship_target_summarizers[relationship.name] = summarizers(self.bottleneck_size, activation)
-            self.relationship_source_summarizers = torch.nn.ModuleDict(relationship_source_summarizers)
-            self.relationship_target_summarizers = torch.nn.ModuleDict(relationship_target_summarizers)
-
+        # The first has input layers of size equal to the size of the corresponding entity's
+        # representation size and a fixed-size output.  The rest have input layers of the 
+        # previous output size plus a bottleneck size for each possible (forward or reverse) 
+        # relationship.
+        self.entity_autoencoders = {}
+        self.entity_bottlenecks_combined_sizes = {}
+        activation = torch.nn.functional.relu
+        null_autoencoder_class = starport(schema["meta"]["null_autoencoder"])
+        autoencoder_class = starport(schema["meta"]["autoencoder"])
+        for depth in range(self.depth + 1):
+            for entity_type_name, entity_type in schema["entity_types"].items():
+                self.entity_autoencoders[entity_type_name] = self.entity_autoencoders.get(
+                    entity_type_name,
+                    []
+                )
+                input_size = (
+                    self.encoded_sizes[entity_type_name] 
+                    if depth == 0 
+                    else self.entity_autoencoders[entity_type_name][depth - 1].output_size
+                )
+                if depth > 0:
+                    relationship_size = 0
+                    for rel_name, rel in schema.get("relationships", {}).items():
+                        s_et = rel["source_entity_type"]
+                        t_et = rel["target_entity_type"]
+                        if s_et == entity_type_name:
+                            input_size += self.entity_autoencoders[t_et][depth - 1].bottleneck_size
+                        if t_et == entity_type_name:
+                            input_size += self.entity_autoencoders[s_et][depth - 1].bottleneck_size
+                autoencoder_shape = entity_type["meta"]["autoencoder_shape"]
+                bottleneck_size = entity_type["meta"]["bottleneck_size"]
+                self.entity_bottlenecks_combined_sizes[entity_type_name] = (
+                    self.entity_bottlenecks_combined_sizes.get(
+                        entity_type_name,
+                        0
+                    )
+                )
+                self.entity_bottlenecks_combined_sizes[entity_type_name] += bottleneck_size
+                self.entity_autoencoders[entity_type_name].append(
+                    null_autoencoder_class(entity_type_name, depth) if input_size == 0 else autoencoder_class(
+                        entity_type_name,
+                        depth,
+                        input_size,
+                        bottleneck_size,
+                        autoencoder_shape, 
+                        activation
+                    )
+                )
+        self.entity_autoencoders = torch.nn.ModuleDict(
+            {k : torch.nn.ModuleList(v) for k, v in self.entity_autoencoders.items()}
+        )
+        self.entity_normalizers = torch.nn.ModuleDict(
+            {k : starport(self.schema["entity_types"][k]["meta"]["normalizer"])(v[0].input_size) for k, v in self.entity_autoencoders.items()}
+        )
+        # A summarizer for each relationship particant (source or target), at each
+        # depth less than the max, to reduce one-to-many relationships to a fixed size.
+        relationship_source_summarizers = {}
+        relationship_target_summarizers = {}
+        for d in range(self.depth):
+            for rel_name, rel in schema.get("relationships", {}).items(): 
+                st = rel["source_entity_type"]
+                tt = rel["target_entity_type"]
+                relationship_source_summarizers[rel_name] = relationship_source_summarizers.get(rel_name, [])
+                relationship_target_summarizers[rel_name] = relationship_target_summarizers.get(rel_name, [])
+                sbs = self.entity_autoencoders[st][d].bottleneck_size
+                tbs = self.entity_autoencoders[tt][d].bottleneck_size
+                relationship_source_summarizers[rel_name].append(
+                    starport(rel["meta"]["source_summarizer"] if sbs > 0 else "starcoder.summarizer.NullSummarizer")(
+                        sbs
+                    )
+                )
+                relationship_target_summarizers[rel_name].append(
+                    starport(rel["meta"]["target_summarizer"] if tbs > 0 else "starcoder.summarizer.NullSummarizer")(
+                        tbs
+                    )
+                )
+        self.relationship_source_summarizers = torch.nn.ModuleDict(
+            {k : torch.nn.ModuleList(v) for k, v in relationship_source_summarizers.items()}
+        )
+        self.relationship_target_summarizers = torch.nn.ModuleDict(
+            {k : torch.nn.ModuleList(v) for k, v in relationship_target_summarizers.items()}
+        )
+        # A binary classifier for each relationship at each autoencoder depth, using bottlenecks
+        relationship_detectors = {}
+        for relationship_name, relationship_spec in self.schema["relationships"].items():
+            continue
+            st = relationship_spec["source_entity_type"]
+            tt = relationship_spec["target_entity_type"]
+            relationship_detectors[relationship_name] = starport(
+                relationship_spec["meta"]["relationship_detector"]
+            )(
+                self.entity_bottlenecks_combined_sizes[st],
+                self.entity_bottlenecks_combined_sizes[tt],
+            )
+        self.relationship_detectors = torch.nn.ModuleDict(relationship_detectors)
         # MLP for each entity type to project representations to a common size
         self.projected_size = projected_size if projected_size != None else max(self.boundary_sizes.values()) * (self.depth + 1)
-        
+        # actually only need to project entities if/when they share properties...
         projectors = {}
-        for entity_type in self.schema.entity_types.values():
-            if self.depthwise_boost == "highway":
-                boundary_size = 0
-                for ae in entity_autoencoders[entity_type.name]:
-                    boundary_size += ae.output_size
-            else:
-                boundary_size = self.boundary_sizes.get(entity_type.name, 0)
-                if self.depth > 0:
-                    for _ in entity_type.relationships:
-                        boundary_size += self.bottleneck_size
-                    if self.reverse_relationships:
-                        for _ in entity_type.reverse_relationships:
-                            boundary_size += self.bottleneck_size
-            if self.depthwise_boost == "cul-de-sac":
-                projectors[entity_type.name] = torch.nn.ModuleList([MLPProjector(self.boundary_sizes[entity_type.name], self.projected_size, activation)] + [MLPProjector(boundary_size, self.projected_size, activation) for _ in range(self.depth)])
-            else:
-                projectors[entity_type.name] = MLPProjector(boundary_size, self.projected_size, activation)
+        projector_class = starport(self.schema["meta"]["projector"])
+        for entity_type_name in self.schema["entity_types"].keys():
+            boundary_size = 0
+            for ae in self.entity_autoencoders[entity_type_name]:
+                boundary_size += ae.output_size
+            projectors[entity_type_name] = projector_class(boundary_size, self.projected_size, activation) if boundary_size not in [0, self.projected_size] else torch.nn.Identity()
         self.projectors = torch.nn.ModuleDict(projectors)
-
-        # A decoder for each property that takes a projected representation and generates a value of the property's data type
+        # A decoder for each property that takes a projected representation 
+        # and generates a value of the property's data type
         property_decoders = {}
-        for property_name, property_object in self.schema.properties.items():
-            property_type = type(property_object)
-            input_size = self.projected_size #self.projected_size if self.depthwise_boost == "none" else self.projected_size * (self.depth + 1)
-            mod, cls = re.match(r"^(.*)\.([^\.]*)$", self.schema.json["properties"][property_name]["meta"]["decoder"]).groups()
-            property_decoder_class = getattr(importlib.import_module(mod), cls)
+        for property_name, property_spec in self.schema["properties"].items():
+            property_decoder_class = starport(property_spec["meta"]["decoder"])
             property_decoders[property_name] = property_decoder_class(
-                property_object,
-                input_size,
+                self.property_objects[property_name],
+                self.projected_size,
                 activation,
                 encoder=self.property_encoders[property_name]
             )
@@ -149,13 +178,13 @@ class GraphAutoencoder(Ensemble):
 
         # A way to calculate loss for each property
         self.property_losses = {}
-        for property_name, property_object in self.schema.properties.items():
-            mod, cls = re.match(r"^(.*)\.([^\.]*)$", self.schema.json["properties"][property_name]["meta"]["loss"]).groups()
-            property_loss_class = getattr(importlib.import_module(mod), cls)
-            property_type = type(property_object)            
-            self.property_losses[property_name] = property_loss_class(property_object)            
+        for property_name, property_spec in self.schema["properties"].items():
+            property_loss_class = starport(property_spec["meta"]["loss"])
+            self.property_losses[property_name] = property_loss_class(
+                self.property_objects[property_name]
+            )
 
-    def cuda(self, device: Any="cuda:0") -> "GraphAutoencoder":
+    def cuda(self, device="cuda:0"):
         self.device = torch.device(device)
         return super(GraphAutoencoder, self).cuda()
 
@@ -163,177 +192,204 @@ class GraphAutoencoder(Ensemble):
     def parameter_count(self) -> int:
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
-    def encode_properties(self, entities: StackedEntities) -> Dict[str, Tensor]:
+
+    def pack_properties(self, entities):        
+        entity_type_to_batch_indices = {et : [] for et in self.schema["entity_types"].keys()}
+        entity_type_to_property_indices = {et : {p : [] for p in self.schema["properties"].keys()} for et in self.schema["entity_types"].keys()}
+        logger.debug("Assembling entity, property, and (entity, property) indices")        
+        packed_properties = {}
+        for bi, entity in enumerate(entities):
+            entity_type_name = entity[self.schema["entity_type_property"]]
+            ei = len(entity_type_to_batch_indices[entity_type_name])
+            entity_type_to_batch_indices[entity_type_name].append([ei, bi])
+            for property_name in self.schema["entity_types"][entity_type_name]["properties"]: 
+                packed_properties[property_name] = packed_properties.get(property_name, [])
+                property_object = self.property_objects[property_name]
+                entity_type_to_property_indices[entity_type_name] = entity_type_to_property_indices.get(
+                    entity_type_name, 
+                    {}
+                )
+                entity_type_to_property_indices[entity_type_name][property_name] = (
+                    entity_type_to_property_indices[entity_type_name].get(property_name, [])
+                )
+                if property_name not in entity:
+                    continue
+                packed_property_value = property_object.pack(entity[property_name])                
+                pi = len(packed_properties[property_name])
+                packed_properties[property_name].append(packed_property_value)
+                entity_type_to_property_indices[entity_type_name][property_name].append(
+                    [ei, pi]
+                )
+        for property_name in list(packed_properties.keys()):
+            if len(packed_properties[property_name]) == 0:
+                stand_in = torch.tensor(self.property_objects[property_name].missing_value)
+                packed_properties[property_name] = torch.zeros(
+                    size=(0,) + stand_in.shape,
+                    device=self.device,
+                    dtype=self.property_objects[property_name].stacked_type
+                )
+            else:
+                packed_properties[property_name] = torch.tensor(
+                    packed_properties[property_name],
+                    device=self.device,
+                    dtype=self.property_objects[property_name].stacked_type
+                )
+        for entity_type_name, indices in entity_type_to_batch_indices.items():
+            logger.debug("%d '%s' entities", len(indices), entity_type_name)
+        return (
+            {
+                k : torch.tensor(
+                    v,
+                    dtype=torch.int64,
+                    device=self.device
+                ).reshape(shape=(-1, 2)) for k, v in entity_type_to_batch_indices.items()
+            }, 
+            {
+                p : {
+                    k : torch.tensor(v, dtype=torch.int64, device=self.device).reshape(shape=(-1, 2)) for k, v in vv.items()
+                } for p, vv in entity_type_to_property_indices.items()
+            }, 
+            packed_properties
+        )
+
+    def encode_properties(self, packed_properties):
         logger.debug("Encoding each input property to a fixed-length representation")
-        retval = {k : self.property_encoders[k](v) if k in self.property_encoders else v for k, v in entities.items()}
-        return retval
+        encoded_properties = {}
+        for property_name, property_values in packed_properties.items():
+            encoded_properties[property_name] = self.property_encoders[property_name](
+                property_values
+            )
+        return encoded_properties
     
-    def create_autoencoder_inputs(self, encoded_properties: Dict[str, Tensor], entity_indices: Dict[str, Tensor]) -> Dict[str, Tensor]:
+    def create_autoencoder_inputs(self, 
+                                  encoded_properties, 
+                                  entity_type_to_batch_indices,
+                                  entity_type_to_property_indices):
         logger.debug("Constructing entity-autoencoder inputs by concatenating property encodings")
         autoencoder_inputs = {}
         autoencoder_input_lists = {}
-        for entity_type in self.schema.entity_types.values():
-            #
-            # each appended value should have shape (entity_count x encoding_width)
-            #            
-            autoencoder_input_lists[entity_type.name] = [torch.zeros(size=(entity_indices[entity_type.name].shape[0], 8), dtype=torch.float32, device=self.device)]
-            for property_name in entity_type.properties:
-                #
-                # select the property values of the appropriate entity-type
-                #
-                vals = torch.index_select(
-                    encoded_properties[property_name], 
-                    0, 
-                    entity_indices[entity_type.name]
-                )
-                autoencoder_input_lists[entity_type.name].append(vals)
-                nan_test = vals.reshape(vals.shape[0], -1 if vals.shape[0] != 0 else 0).sum(1)
-                inds = torch.where(
-                    torch.isnan(nan_test), #vals[:, 0]), 
-                    torch.zeros(size=(vals.shape[0], 1), device=self.device), 
-                    torch.ones(size=(vals.shape[0], 1), device=self.device)
-                )
-                autoencoder_input_lists[entity_type.name].append(
-                    torch.zeros(
-                        size=(
-                            autoencoder_input_lists[entity_type.name][-1].shape[0], 
-                            1
-                        ),
-                        device=self.device
-                    )
-                )
-            autoencoder_input_lists[entity_type.name].append(
-                torch.zeros(
-                    size=(entity_indices[entity_type.name].shape[0], 0), 
-                    dtype=torch.float32,
+        for entity_type_name, et_to_batch_indices in entity_type_to_batch_indices.items():
+            autoencoder_input_lists[entity_type_name] = []
+            entity_count = et_to_batch_indices.shape[0]
+            for property_name in self.schema["entity_types"][entity_type_name]["properties"]:
+                et_to_prop_indices = entity_type_to_property_indices.get(entity_type_name, {}).get(property_name)
+                vals = torch.zeros(
+                    size=(entity_count, self.property_encoders[property_name].output_size),
                     device=self.device
                 )
+                idx = entity_type_to_property_indices[entity_type_name][property_name]
+                if idx.shape[0] != 0:
+                    vals[idx[:, 0]] = encoded_properties[property_name][idx[:, 1]]
+                autoencoder_input_lists[entity_type_name].append(vals)
+            autoencoder_inputs[entity_type_name] = self.entity_normalizers[entity_type_name](
+                torch.cat(
+                    autoencoder_input_lists[entity_type_name] + [torch.zeros(size=(entity_count, 0), device=self.device)],
+                    1
+                )
             )
-            autoencoder_inputs[entity_type.name] = torch.cat(
-                autoencoder_input_lists[entity_type.name], 
-                1
-            )
-            autoencoder_inputs[entity_type.name][torch.isnan(autoencoder_inputs[entity_type.name])] = 0
         logger.debug("Shapes: %s", {k : v.shape for k, v in autoencoder_inputs.items()})
-        autoencoder_inputs = {k : self.dropout(v) for k, v in autoencoder_inputs.items()}
         return autoencoder_inputs    
 
-    def run_first_autoencoder_layer(self, autoencoder_inputs: Dict[str, Tensor]) -> Tuple[Dict[str, Tensor], Dict[str, Tensor]]:
-        logging.debug("Starting first (graph-unaware) autoencoding layer")
+    def run_autoencoder(self,
+                        depth,
+                        autoencoder_inputs):
+        logging.debug("Running depth-%d autoencoder", depth)
         bottlenecks = {}
         autoencoder_outputs = {}
-        for entity_type in self.schema.entity_types.values():
-            entity_reps = autoencoder_inputs.get(entity_type.name, None)
+        for entity_type_name, entity_type_spec in self.schema["entity_types"].items():
+            entity_reps = autoencoder_inputs.get(entity_type_name, None)
             if entity_reps != None:
-                entity_outputs, bns, losses = self.entity_autoencoders[entity_type.name][0](autoencoder_inputs[entity_type.name]) # type: ignore
+                entity_outputs, bns = self.entity_autoencoders[entity_type_name][depth](
+                    autoencoder_inputs[entity_type_name]
+                )
                 if entity_outputs != None:
-                    autoencoder_outputs[entity_type.name] = entity_outputs
+                    autoencoder_outputs[entity_type_name] = entity_outputs
                 if bns != None:
-                    bottlenecks[entity_type.name] = bns
-        logging.debug("Finished first (graph-unaware) autoencoding layer")
+                    bottlenecks[entity_type_name] = bns
         return (bottlenecks, autoencoder_outputs)
 
-    def run_structured_autoencoder_layer(self,
-                                         depth: int,
-                                         autoencoder_inputs: Dict[str, Tensor],
-                                         prev_bottlenecks: Dict[str, Tensor],
-                                         adjacencies: Adjacencies,
-                                         batch_index_to_entity_index: Tensor,
-                                         entity_indices: Dict[str, Tensor]) -> Tuple[Dict[str, Tensor], Dict[str, Tensor]]:
-        logging.debug("Starting graph-aware autoencoding layer number %d", depth)
-        bottlenecks = {}
-        autoencoder_outputs = {}
-        num_all_entities = sum([len(x) for x in entity_indices.values()])
-        index_space = torch.arange(0, num_all_entities, 1, device=self.device)
-        for entity_type_name, entity_type_inputs in autoencoder_inputs.items(): #self.schema.entity_types.values():
-            entity_type = self.schema.entity_types[entity_type_name]
-            autoencoder_outputs[entity_type_name] = entity_type_inputs.narrow(1, 0, self.entity_autoencoders[entity_type_name][0].output_size) # type: ignore
-            num_entities = entity_type_inputs.shape[0]            
-            other_rep_list = []
-            for rel_name in entity_type.relationships + (entity_type.reverse_relationships if self.reverse_relationships else []):
-                summarize = self.relationship_target_summarizers[rel_name]
-                relationship = self.schema.relationships[rel_name]
-                target_entity_type = relationship.target_entity_type
-                rep_size = self.entity_autoencoders[target_entity_type][depth - 1].bottleneck_size # type: ignore
-                relationship_reps = torch.zeros(size=(num_entities, rep_size), device=self.device)
-                for i, index in enumerate(entity_indices[entity_type_name]):
-                    #related_indices: List[int] = []
+    def create_structured_autoencoder_inputs(self,
+                                             depth,
+                                             prev_outputs,
+                                             prev_bottlenecks,
+                                             adjacencies):
+        rev_adjacencies = {k : v.T for k, v in adjacencies.items()}
+        autoencoder_inputs = {}
+        for entity_type_name, prev_output in prev_outputs.items():
+            entity_type = self.schema["entity_types"][entity_type_name]
+            autoencoder_inputs[entity_type_name] = [prev_output]
+            for rel_name, rel_spec in sorted(self.schema["relationships"].items()):
+                source = rel_spec["source_entity_type"]
+                target = rel_spec["target_entity_type"]                
+                if source == entity_type_name:
+                    summarizer = self.relationship_target_summarizers[rel_name][depth - 1]
+                    other = target
+                    val = torch.zeros(size=(prev_output.shape[0], summarizer.output_size), device=self.device)
                     if rel_name in adjacencies:
-                        related_indices_ = index_space.masked_select(adjacencies[rel_name][index])
-                        #print(batch_index_to_entity_index)
-                        related_indices = torch.tensor([batch_index_to_entity_index[j] for j in related_indices_], device=self.device)
-                        if len(related_indices) > 0:
-                            try:
-                                obns = torch.index_select(
-                                    prev_bottlenecks[target_entity_type], 
-                                    0, 
-                                    related_indices
-                                )
-                            except Exception as e:
-                                print(related_indices, prev_bottlenecks[target_entity_type].shape, batch_index_to_entity_index)
-                                raise e
-                            relationship_reps[i] = summarize(obns)
-                other_rep_list.append(relationship_reps)
-
-            sh = list(autoencoder_outputs[entity_type.name].shape)
-            sh[1] = 0
-            other_reps = torch.cat(other_rep_list, 1) if len(other_rep_list) > 0 else torch.zeros(size=tuple(sh), device=self.device)
-            struct_autoencoder_inputs = {}
-            struct_autoencoder_inputs[entity_type.name] = torch.cat([autoencoder_outputs[entity_type.name], other_reps], 1)
-            if depth > len(self.entity_autoencoders[entity_type.name]) - 1: # type: ignore
-                raise Exception()
-                logger.debug("At depth %d, while the model was trained for depth %d, so reusing final autoencoder",
-                             depth + 1,
-                             len(self._entity_autoencoders[entity_type.name]))
-                entity_outputs, bns, losses = self.entity_autoencoders[entity_type.name][-1](struct_autoencoder_inputs[entity_type.name])
-            else:
-                entity_outputs, bns, losses = self.entity_autoencoders[entity_type.name][depth](struct_autoencoder_inputs[entity_type.name]) # type: ignore
-            autoencoder_outputs[entity_type.name] = entity_outputs
-            #if entity_outputs.shape[1] != 0:
-            #   bottlenecks[entity_indices[entity_type.name]] = bns
-            
-            entity_reps = struct_autoencoder_inputs.get(entity_type.name, None)
-            if entity_reps != None:
-                entity_outputs, bns, losses = self.entity_autoencoders[entity_type.name][depth](struct_autoencoder_inputs[entity_type.name]) # type: ignore
-                if entity_outputs != None:
-                    autoencoder_outputs[entity_type.name] = entity_outputs
-                if bns != None:
-                    bottlenecks[entity_type.name] = bns
-        logging.debug("Finished graph-aware autoencoding layer number %d", depth)
-
-        return (bottlenecks, autoencoder_outputs)    
+                        adj = adjacencies[rel_name]
+                        for i in range(prev_output.shape[0]):
+                            if adj[i].sum() > 0:
+                                val[i, :] = summarizer(prev_bottlenecks[other][adj[i]])
+                    autoencoder_inputs[entity_type_name].append(val)
+                if rel_spec["target_entity_type"] == entity_type_name:
+                    summarizer = self.relationship_source_summarizers[rel_name][depth - 1]
+                    other = source
+                    val = torch.zeros(size=(prev_output.shape[0], summarizer.output_size), device=self.device)
+                    if rel_name in adjacencies:
+                        adj = adjacencies[rel_name].T
+                        for i in range(prev_output.shape[0]):
+                            if adj[i].sum() > 0:
+                                val[i, :] = summarizer(prev_bottlenecks[other][adj[i]])
+                    autoencoder_inputs[entity_type_name].append(val)
+        autoencoder_inputs = {k : torch.cat(v, 1) for k, v in autoencoder_inputs.items()}
+        for k, v in autoencoder_inputs.items():
+            assert v.isnan().sum() == 0
+        return autoencoder_inputs
                     
-    def project_autoencoder_outputs(self, autoencoder_outputs: Dict[str, Tensor]) -> Dict[str, Tensor]:
-        if self.depthwise_boost == "cul-de-sac":
-            rao = []
-            for d in range(self.depth + 1):
-                raod = {}
-                for entity_type_name, ae_output in autoencoder_outputs[d].items():
-                    raod[entity_type_name] = self.projectors[entity_type_name][d](ae_output)
-                rao.append(raod)
-            return rao
-
+    def project_autoencoder_outputs(self, autoencoder_outputs):
         resized_autoencoder_outputs = {}        
         for entity_type_name, ae_output in autoencoder_outputs.items():
-            if self.depthwise_boost == "highway":
-                resized_autoencoder_outputs[entity_type_name] = self.projectors[entity_type_name](ae_output)
-            else:
-                resized_autoencoder_outputs[entity_type_name] = self.projectors[entity_type_name](ae_output)
+            resized_autoencoder_outputs[entity_type_name] = self.projectors[entity_type_name](ae_output)
         return resized_autoencoder_outputs
     
-    def decode_properties(self, resized_encoded_entities: Dict[str, Tensor]) -> Dict[str, Dict[str, Tensor]]:
+    def decode_properties(self, 
+                          resized_encoded_entities,
+                          entity_type_to_batch_indices,
+                          entity_type_to_property_indices,
+    ):
         """
+        Decode *all possible properties* for each entity, according to its entity type.
         """
-        reconstructions: Dict[str, Any] = {}        
-        for property in self.schema.properties.values():
-            for entity_type_name, v in resized_encoded_entities.items():
-                reconstructions[entity_type_name] = reconstructions.get(entity_type_name, {})
-                reconstructions[entity_type_name][property.name] = self.property_decoders[property.name](v)
-        return reconstructions
+        reconstructions = {}
+        indices = {}
+        for entity_type_name, property_name_to_indices in entity_type_to_property_indices.items():
+            for property_name, index_pairs in property_name_to_indices.items():
+                indices[property_name] = indices.get(property_name, [])
+                reconstructions[property_name] = reconstructions.get(property_name, [])
+                indices[property_name].append(index_pairs)
+                reconstructions[property_name].append(
+                    self.property_decoders[property_name](resized_encoded_entities[entity_type_name])
+                )
+                #print(reconstructions[property_name], property_name)
+                logger.debug("Decoded values for property '%s' of entity type '%s' into shape %s",
+                             property_name,
+                             entity_type_name,
+                             reconstructions[property_name][-1].shape[0]
+                         )
+        indices = {k : torch.cat(v, 0) for k, v in indices.items()}        
+        retval = {k : torch.cat(v, 0) for k, v in reconstructions.items()}
+        return (indices, retval)
     
-    def assemble_entities(self, decoded_properties: Dict[str, Dict[str, Tensor]], entity_indices: Dict[str, Tensor]) -> Dict[str, Tensor]:
+    def assemble_entities(self, 
+                          decoded_properties, 
+                          entity_type_to_batch_indices, 
+                          entity_type_to_property_indices,
+                          entities):
         num = sum([len(v) for v in entity_indices.values()])
-        retval: Dict[str, Tensor] = {}
+        retval = {
+            self.schema["entity_type_property"] : [None] * num,
+            self.schema["id_property"] : [None] * num,
+        }
         for entity_type_name, properties in decoded_properties.items():
             indices = entity_indices[entity_type_name]
             for property_name, property_values in properties.items():
@@ -345,107 +401,182 @@ class GraphAutoencoder(Ensemble):
                     )
                 )
                 retval[property_name][indices] = property_values
+        retval[self.schema["id_property"]] = numpy.array(
+            [e[self.schema["id_property"]] for e in entities]
+        )
+        retval[self.schema["entity_type_property"]] = numpy.array(
+            [e[self.schema["entity_type_property"]] for e in entities]
+        )
         return retval
-    
-    def compute_indices(self, entities: StackedEntities) -> Tuple[Dict[str, Tensor], Dict[str, Tensor], Dict[Tuple[str, str], Tensor]]:
-        entity_indices = {}
-        entity_masks = {}
-        property_indices = {}
-        property_masks = {}
-        entity_property_indices = {}
-        entity_property_masks = {}
-        logger.debug("Assembling entity, property, and (entity, property) indices")        
-        index_space = torch.arange(0, entities[self.schema.entity_type_property.name].shape[0], 1, device=self.device)
-        for property in self.schema.properties.values():
-            # FIXME: hack for RNNs            
-            if property.type_name in ["sequential", "text"]:
-                if entities[property.name].shape[1] == 0:
-                    property_masks[property.name] = torch.full((entities[property.name].shape[0],), False, device=self.device, dtype=torch.bool)
-                else:
-                    property_masks[property.name] = entities[property.name][:, 0] != 0
-            else:
-                property_masks[property.name] = ~torch.isnan(torch.reshape(entities[property.name], (entities[property.name].shape[0], -1)).sum(1))
-            property_indices[property.name] = index_space.masked_select(property_masks[property.name])
-            
-        for entity_type in self.schema.entity_types.values():
-            entity_masks[entity_type.name] = torch.tensor((entities[self.schema.entity_type_property.name] == entity_type.name), device=self.device)
-            entity_indices[entity_type.name] = index_space.masked_select(entity_masks[entity_type.name])
-            for property_name in entity_type.properties:
-                entity_property_masks[(entity_type.name, property_name)] = entity_masks[entity_type.name] & property_masks[property_name]
-                entity_property_indices[(entity_type.name, property_name)] = index_space.masked_select(entity_property_masks[(entity_type.name, property_name)])
-        return (entity_indices, property_indices, entity_property_indices)
-    
-    def forward(self, entities: StackedEntities, adjacencies: Adjacencies) -> Tuple[Dict[str, Tensor], Dict[str, Tensor]]:
-        logger.debug("Starting forward pass")
-        entity_indices, property_indices, entity_property_indices = self.compute_indices(entities)
-        batch_index_to_entity_index = torch.tensor([i for _, i in sorted(sum([[(bi.item(), ei) for ei, bi in enumerate(ev)] for k, ev in entity_indices.items()], []))], device=self.device)
-        num_entities = len(entities[self.schema.id_property.name])
-        rev_adjacencies = {k : v.T for k, v in adjacencies.items()}
-        property_encodings = self.encode_properties(entities)
-        encoded_entities = self.create_autoencoder_inputs(property_encodings, entity_indices)
+
+    def prepare_adjacencies(self, adjacencies, entity_type_to_batch_indices):
+        retval = {}
+        for relationship_name, adj in adjacencies.items():
+            source = self.schema["relationships"][relationship_name]["source_entity_type"]
+            target = self.schema["relationships"][relationship_name]["target_entity_type"]
+            retval[relationship_name] = adj[
+                entity_type_to_batch_indices[source][:, 1].flatten().tolist(),
+                :
+            ][
+                :,
+                entity_type_to_batch_indices[target][:, 1].flatten().tolist()
+            ].to(self.device)
+        return retval
+
+    def forward(self, entities, adjacencies):
+        num_entities = len(entities)
+        logger.debug("Starting forward pass with %d entities", num_entities)
+        entity_type_to_batch_indices, entity_type_to_property_indices, packed_properties = self.pack_properties(
+            entities
+        )
+        adjacencies = self.prepare_adjacencies(adjacencies, entity_type_to_batch_indices)
+        encoded_properties = self.encode_properties(packed_properties)
+        all_bottlenecks = {}
         all_ae_outputs = []        
-        bottlenecks, encoded_entities = self.run_first_autoencoder_layer(encoded_entities)
-        all_ae_outputs.append(encoded_entities)
-        for depth in range(1, self.depth + 1):
-            bottlenecks, encoded_entities = self.run_structured_autoencoder_layer(depth,                
-                                                                                  all_ae_outputs[-1],
-                                                                                  prev_bottlenecks=bottlenecks,
-                                                                                  adjacencies=adjacencies,
-                                                                                  batch_index_to_entity_index=batch_index_to_entity_index,
-                                                                                  entity_indices=entity_indices)
+        for depth in range(self.depth + 1):
+            encoded_entities = self.create_autoencoder_inputs(
+                encoded_properties,
+                entity_type_to_batch_indices,
+                entity_type_to_property_indices             
+            ) if depth == 0 else self.create_structured_autoencoder_inputs(
+                depth,
+                all_ae_outputs[-1],
+                {k : v[-1] for k, v in all_bottlenecks.items()},
+                adjacencies
+            )
+            bottlenecks, encoded_entities = self.run_autoencoder(
+                depth,
+                encoded_entities
+            )
+            for entity_type_name, b in bottlenecks.items():
+                all_bottlenecks[entity_type_name] = all_bottlenecks.get(entity_type_name, [])
+                all_bottlenecks[entity_type_name].append(b)
             all_ae_outputs.append(encoded_entities)
-        if self.depthwise_boost == "highway":
-            encoded_entities = {}
-            for entity_type_name in list(all_ae_outputs[0].keys()):
-                encoded_entities[entity_type_name] = torch.cat(
-                    [out[entity_type_name] for out in all_ae_outputs],
-                    1
-                )
-        elif self.depthwise_boost == "cul-de-sac":
-            decoded_entities = []
-            resized_encoded_entities = self.project_autoencoder_outputs(all_ae_outputs)
-            for d in range(self.depth + 1):
-                decoded_properties = self.decode_properties(resized_encoded_entities[d])
-                decoded_entities.append(self.assemble_entities(decoded_properties, entity_indices))
-                normalized_entities = {k : self.property_decoders[k].normalize(v.cpu().detach()) for k, v in decoded_entities[-1].items()}
-                for k, v in entities.items():
-                    if k not in decoded_entities[d]:
-                        decoded_entities[d][k] = v
-                        normalized_entities[k] = v
-                bottlenecks_by_id = {}
-                for entity_type_name, bns in bottlenecks.items():
-                    ids = entities[self.schema.id_property.name][entity_indices[entity_type_name].cpu()]
-                    # strange how numpy.array can be a scalar here!
-                    if isinstance(ids, str):
-                        ids = [ids]
-                    for i, bn in zip(ids, bns):
-                        bottlenecks_by_id[i] = bn
-            logger.debug("Returning reconstructions, bottlenecks, and autoencoder I/O pairs")
-            return (decoded_entities, normalized_entities, bottlenecks_by_id)
-        else:
-            encoded_entities = all_ae_outputs[-1]
+        encoded_entities = {}
+        for entity_type_name in list(all_ae_outputs[0].keys()):
+            encoded_entities[entity_type_name] = torch.cat(
+                [out[entity_type_name] for out in all_ae_outputs],
+                1
+            )
         resized_encoded_entities = self.project_autoencoder_outputs(encoded_entities)
-        decoded_properties = self.decode_properties(resized_encoded_entities)
-        decoded_entities = self.assemble_entities(decoded_properties, entity_indices)
-        normalized_entities = {k : self.property_decoders[k].normalize(v.cpu().detach()) for k, v in decoded_entities.items()}
-        for k, v in entities.items():
-            if k not in decoded_entities:
-                decoded_entities[k] = v
-                normalized_entities[k] = v
+        indices, decoded_properties = self.decode_properties(
+            resized_encoded_entities,
+            entity_type_to_batch_indices,
+            entity_type_to_property_indices
+        )
+        property_loss = self.compute_property_losses(
+            packed_properties, 
+            {k : v[indices[k][:, 0]] for k, v in decoded_properties.items()}
+        )
+        relationship_loss = 0.0
+        #self.compute_relationship_losses(
+        #    adjacencies,
+        #    {k : torch.cat(v, 1) for k, v in all_bottlenecks.items()},
+        #)
+        reconstructions_by_id = {} if self.training else self.reconstruct_entities(
+            decoded_properties, 
+            entities, 
+            entity_type_to_batch_indices,
+        )
+        bottlenecks_by_id = self.assemble_bottlenecks(
+            {k : v[-1] for k, v in all_bottlenecks.items()},
+            entities, 
+            entity_type_to_batch_indices
+        )
+        logger.debug("Returning losses, reconstructions, and bottlenecks")
+        return (entities, property_loss + relationship_loss, reconstructions_by_id, bottlenecks_by_id)
+
+    def compute_relationship_losses(self, adjacencies, bottlenecks):
+        val = 0.0
+        for relationship_name, adj in adjacencies.items():
+            st = self.schema["relationships"][relationship_name]["source_entity_type"]
+            tt = self.schema["relationships"][relationship_name]["target_entity_type"]
+            det = self.relationship_detectors[relationship_name]
+            pos = torch.nonzero(adj)
+            neg = torch.nonzero(adj == False)
+            # will be problem for super-dense graphs...
+            neg = neg[torch.randint(neg.shape[0], size=(pos.shape[0],))]
+            pairs = torch.cat([pos, neg], 0)
+            x = torch.cat(
+                [
+                    torch.index_select(
+                        bottlenecks[st],
+                        0,
+                        pairs[:, 0]
+                    ),
+                    torch.index_select(
+                        bottlenecks[tt],
+                        0,
+                        pairs[:, 1]
+                    )
+                ],
+                1
+            )
+            y = torch.cat(
+                [
+                    torch.ones(size=(neg.shape[0],), dtype=torch.int64, device=self.device), 
+                    torch.zeros(size=(neg.shape[0],), dtype=torch.int64, device=self.device)
+                ], 
+                0
+            )
+            val += torch.nn.functional.cross_entropy(det(x), y, reduction="mean")
+        return val
+
+    def compute_property_losses(self, packed_entities, decoded_properties):
+        logger.debug("Started computing all losses")
+        losses_by_property = {}
+        for property_name, gold_values in packed_entities.items():
+            reconstructed_values = decoded_properties[property_name]
+            mask = ~torch.isnan(gold_values)
+            
+            losses_by_property[property_name] = self.property_losses[property_name](
+                reconstructed_values,
+                gold_values
+            )
+        logger.debug("Finished computing all losses")
+        return torch.sum(torch.cat([torch.nansum(v).flatten() for k, v in losses_by_property.items()]))
+
+    def assemble_bottlenecks(self, bottlenecks, entities, entity_type_to_batch_indices):
         bottlenecks_by_id = {}
         for entity_type_name, bns in bottlenecks.items():
-            ids = entities[self.schema.id_property.name][entity_indices[entity_type_name].cpu()]
+            entity_indices = entity_type_to_batch_indices[entity_type_name][:, 1].cpu()
+            ids = [entities[i][self.schema["id_property"]] for i in entity_indices]
             # strange how numpy.array can be a scalar here!
             if isinstance(ids, str):
                 ids = [ids]
             for i, bn in zip(ids, bns):
-                bottlenecks_by_id[i] = bn
-        logger.debug("Returning reconstructions, bottlenecks, and autoencoder I/O pairs")
-        return (decoded_entities, normalized_entities, bottlenecks_by_id)
+                bottlenecks_by_id[i] = bn.cpu().detach().tolist()
+        return bottlenecks_by_id
 
     # Recursively initialize model weights
-    def init_weights(m: Any) -> None:
+    def init_weights(m):
         if type(m) == torch.nn.Linear or type(m) == torch.nn.Conv1d:
             torch.nn.init.xavier_uniform_(m.weight)
             m.bias.data.fill_(0.01)
     
+    def reconstruct_entities(self, 
+                             decoded_properties, 
+                             entities, 
+                             entity_type_to_batch_indices, 
+    ):
+        retval = {}
+        entity_lookups = {
+            e : {
+                bi : ei for ei, bi in v.cpu().tolist()
+            } for e, v in entity_type_to_batch_indices.items()
+        }
+        for i, entity in enumerate(entities):
+            entity_type_name = entity[self.schema["entity_type_property"]]
+            reconstruction = {
+                self.schema["id_property"] : entity[self.schema["id_property"]],
+                self.schema["entity_type_property"] : entity[self.schema["entity_type_property"]],
+            }
+            for property_name in self.schema["entity_types"][
+                    reconstruction[self.schema["entity_type_property"]]]["properties"]:
+                reconstruction[property_name] = self.property_objects[property_name].unpack(
+                    self.property_losses[property_name].normalize(
+                        decoded_properties[property_name][entity_lookups[entity_type_name][i]].cpu().detach()
+                    )
+                )
+            retval[reconstruction[self.schema["id_property"]]] = reconstruction
+        return retval

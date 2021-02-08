@@ -6,471 +6,186 @@ import torch
 import logging
 from datetime import date, datetime
 from starcoder.base import StarcoderObject
-from typing import Type, List, Dict, Set, Any, Callable, Iterator, Union, Tuple, Sequence, Sized, TypeVar, Generic, Hashable, Optional
 from abc import ABCMeta, abstractmethod, abstractproperty
 from torch import Tensor, dtype
 import torchvision
-#import torchaudio
 
 logger = logging.getLogger(__name__)
 
-PackedValueType = Union[int, float]
-PackedValue = Union[int, float]
-UnpackedValueType = Union[str, int, float]
-UnpackedValue = Union[str, int, float]
-
-class Missing():
-    pass
-
-I = TypeVar("I")
-U = TypeVar("U")
-P = TypeVar("P")
 
 class Property(StarcoderObject, metaclass=ABCMeta):
     """
 Property objects represent a type with particular semantics and its canonical
 representation.
     """
-    def __init__(self, name: str, **args: Any) -> None:
+    def __init__(self, name, spec, **args):
         self.name = name
-        self.type_name = args["type"]
+        self.type_name = spec["type"]
         self.args = args
         self.empty = True
-
-    def __str__(self) -> str:
+        self.spec = spec
+    def __str__(self):
         return "{0}: {1}".format(self.name, self.type_name)
-    #@abstractproperty
-    #def elastic_field(self) -> Dict[str, Any]: pass
     @abstractproperty
-    def missing_value(self) -> P: pass
+    def missing_value(self): pass
+
 
 class MetaProperty(Property):
-    def __init__(self, name: str, **args: Any) -> None:
-        super(MetaProperty, self).__init__(name, **args)
+    def __init__(self, name, spec, **args):
+        super(MetaProperty, self).__init__(name, spec, **args)
     @property
-    def missing_value(self) -> P:
+    def missing_value(self):
         raise Exception("'{}' is a meta-field, so missing values should never occur!".format(self.name))    
-        
-class DataProperty(Property, Generic[I, U, P], Sized): 
-    def __init__(self, name: str, **args: Any) -> None:
-        super(DataProperty, self).__init__(name, **args)
-    #@abstractmethod
-    def load(self, v: I) -> U: pass
+
+
+class DataProperty(Property): 
+    def __init__(self, name, spec, **args):
+        super(DataProperty, self).__init__(name, spec, **args)
+    def load(self, v): pass
     @abstractmethod
-    def pack(self, v: Optional[U]) -> P: pass
+    def pack(self, v): pass
     @abstractmethod
-    def unpack(self, v: P) -> Optional[U]: pass
+    def unpack(self, v): pass
     @abstractmethod
-    def observe_value(self, v: U) -> None: pass
-    #@abstractproperty
-    #def unpacked_type(self) -> Any: pass
-    #@abstractproperty
-    #def packed_type(self) -> Any: pass
+    def observe_value(self, v): pass
     @abstractproperty
-    def stacked_type(self) -> dtype: pass
-    
+    def stacked_type(self): pass
+
+
 class EntityTypeProperty(MetaProperty):
-    def __init__(self, name: str, **args: Any) -> None:
-        super(EntityTypeProperty, self).__init__(name, type="entity_type", **args)
-    @property
-    def elastic_field(self) -> Dict[str, Any]:
-        return {"type" : "keyword"}
+    def __init__(self, name: str, **args):
+        super(EntityTypeProperty, self).__init__(name, {"type" : "entity_type"}, **args)
+
     
 class RelationshipProperty(Property):
-    def __init__(self, name: str, **args: Any) -> None:
+    def __init__(self, name, **args):
         super(RelationshipProperty, self).__init__(name, **args)
         self.source_entity_type = args["source_entity_type"]        
         self.target_entity_type = args["target_entity_type"]
-    def __str__(self) -> str:
+    def __str__(self):
         return "{}({}->{})".format(self.name, self.source_entity_type, self.target_entity_type)
-    #@property
-    #def elastic_field(self) -> Dict[str, Any]:
-    #    return {"type" : "join"}
     @property
-    def missing_value(self) -> Any:
+    def missing_value(self):
         return []
-    
+
+
 class IdProperty(MetaProperty):
     @property
-    def missing_value(self) -> Any:
+    def missing_value(self):
         return None
-    def __init__(self, name: str, **args: Any) -> None:
-        super(IdProperty, self).__init__(name, type="id", **args)
-    #@property
-    #def elastic_field(self) -> Dict[str, Any]:
-    #    return {"type" : "keyword"}
+    def __init__(self, name, **args):
+        super(IdProperty, self).__init__(name, {"type" : "id"}, **args)
 
     
-class NumericProperty(DataProperty[None, float, float]):
-    #packed_type = torch.float32
-    #missing_value = float("nan")
-    def __init__(self, name: str, **args: Any) -> None:
-        super(NumericProperty, self).__init__(name, **args)
+class NumericProperty(DataProperty):
+    def __init__(self, name, spec, data, **args):
+        super(NumericProperty, self).__init__(name, spec, **args)
         self.max_val = None
         self.min_val = None
-    def observe_value(self, v: float) -> None:
+    def observe_value(self, v):
         if v:
-            self.max_val = v if self.max_val == None else max(self.max_val, v) # type: ignore
-            self.min_val = v if self.min_val == None else min(self.min_val, v) # type: ignore
+            self.max_val = v if self.max_val == None else max(self.max_val, v)
+            self.min_val = v if self.min_val == None else min(self.min_val, v)
             self.empty = False
-        #try:
-        #    retval = float(v)
-        #    self.max_val = retval if self.max_val == None else max(self.max_val, v) # type: ignore
-        #    self.min_val = retval if self.min_val == None else min(self.min_val, v) # type: ignore
-        #    self.empty = False
-        #    return float(retval)
-        #except Exception as e:
-        #    logger.error("Could not interpret '%s' for NumericProperty '%s'", v, self.name)
-        #    raise e
-    def unpack(self, v: List[float]) -> Optional[float]: # type: ignore
+    def unpack(self, v):
         return v
-        #if isinstance(v, torch.Tensor):
-        #    v = v.item()
-        #return (None if numpy.isnan(v) else v)
-    def pack(self, v: Optional[float]) -> float:
-        return (self.missing_value if v is None else v)
-    #@property
-    #def packed_type(self) -> dtype:
-    #    return torch.float32
-    @property
-    def stacked_type(self) -> torch.dtype:
-        return torch.float32    
-    @property
-    def missing_value(self) -> float:
-        return float("nan")
-    def __str__(self) -> str:
-        #return "{1} field: {0}[{2}, {3}]".format(self.name, self.type_name, self.min_val, self.max_val)
-        return "{0}: {1}".format(self.name, self.type_name, self.min_val, self.max_val)
-    def __len__(self) -> int:
-        return 1
-    #@property
-    #def elastic_field(self) -> Dict[str, Any]:
-    #    return {"type" : "float"}
-
-    
-class ScalarProperty(DataProperty[None, float, float]):
-    #packed_type = torch.float32
-    #missing_value = float("nan")
-    def __init__(self, name: str, **args: Any) -> None:
-        super(ScalarProperty, self).__init__(name, **args)
-        self.max_val = None
-        self.min_val = None
-    def observe_value(self, v: float) -> None:
-        if v:
-            self.max_val = v if self.max_val == None else max(self.max_val, v) # type: ignore
-            self.min_val = v if self.min_val == None else min(self.min_val, v) # type: ignore
-            self.empty = False
-        #try:
-        #    retval = float(v)
-        #    self.max_val = retval if self.max_val == None else max(self.max_val, v) # type: ignore
-        #    self.min_val = retval if self.min_val == None else min(self.min_val, v) # type: ignore
-        #    self.empty = False
-        #    return float(retval)
-        #except Exception as e:
-        #    logger.error("Could not interpret '%s' for NumericProperty '%s'", v, self.name)
-        #    raise e
-    def unpack(self, v: List[float]) -> Optional[float]: # type: ignore
-        return v
-        #if isinstance(v, torch.Tensor):
-        #    v = v.item()
-        #return (None if numpy.isnan(v) else v)
-    def pack(self, v: Optional[float]) -> float:
-        return (self.missing_value if v is None else v)
-    #@property
-    #def packed_type(self) -> dtype:
-    #    return torch.float32
-    @property
-    def stacked_type(self) -> torch.dtype:
-        return torch.float32    
-    @property
-    def missing_value(self) -> float:
-        return float("nan")
-    def __str__(self) -> str:
-        #return "{1} field: {0}[{2}, {3}]".format(self.name, self.type_name, self.min_val, self.max_val)
-        return "{0}: {1}".format(self.name, self.type_name, self.min_val, self.max_val)
-    def __len__(self) -> int:
-        return 1
-    #@property
-    #def elastic_field(self) -> Dict[str, Any]:
-    #    return {"type" : "float"}
-
-
-    
-class DateProperty(NumericProperty):
     def pack(self, v):
-        retval = float("nan")
-        for fmt in self.args["format"] if isinstance(self.args["format"], list) else [self.args["format"]]:
-            try:
-                retval = datetime.strptime(v, fmt).toordinal()
-            except:
-                pass
-        return retval
-
-    def unpack(self, v):
-        try:
-            for form in self.args["format"] if isinstance(self.args["format"], list) else [self.args["format"]]:
-                return None if numpy.isnan(v) or v < 1 else date.fromordinal(int(v)).strftime(form)
-        except:
-            return None
-
-class DateTimeProperty(NumericProperty):
-    def pack(self, v):        
-        retval = float("nan")
-        for fmt in self.args["format"] if isinstance(self.args["format"], list) else [self.args["format"]]:
-            try:
-                retval = datetime.strptime(v, fmt).toordinal()
-            except:
-                pass
-        return retval
-        #return float("nan") if v == None else datetime.strptime(v, self.args["format"]).toordinal()
-
-    def unpack(self, v):
-        try:
-            return None if numpy.isnan(v) or v < 1 else datetime.fromordinal(int(v)).strftime(self.args["format"])
-        except:
-            return None
-
-class ImageProperty(DataProperty[str, List[List[List[int]]], float]):
-    def __init__(self, name: str, width: int, height: int, channels: int, channel_size: int, **args: Any) -> None:
-        self.width = width
-        self.height = height
-        self.channels = channels
-        self.channel_size = channel_size
-        super(ImageProperty, self).__init__(name, **args)
-    def pack(self, v: Any) -> Any:
-        """
-        Parameters
-        ----------
-        v : tensor-like of shape :math: (\text{width}, \text{height}, \text{channels})
-
-        Returns
-        -------
-        Tensor of shape :math: (\text{channels}, \text{
-        """
-        retval = self.missing_value if v == None else torch.tensor(v).tolist()
-        return retval
-    
-    def unpack(self, v: Any) -> Any:
-        #v = torch.tensor(v)
-        #v = v * 255.0
-        #v = v.permute((2,1,0))
-        return v if isinstance(v, list) else v.tolist()
-    #numpy.asarray(self.to_pil(torch.tensor(v)), dtype=numpy.float64).tolist()
-        #return numpy.array(v).reshape(self.width, self.height, self.channels).tolist()
+        return (self.missing_value if v is None else v)
     @property
-    def stacked_type(self) -> torch.dtype:
-        return torch.float32
-    @property
-    def missing_value(self) -> float:
-        #    return numpy.full((self.channels, self.height, self.width), float("nan")).tolist()       
-        return numpy.full((self.width, self.height, self.channels), float("nan")).tolist()
-    def __len__(self) -> int:
-        return 1
-    def observe_value(self, v: float) -> None:
-        if v:
-            self.empty = False
-
-class AudioProperty(DataProperty[str, List[int], int]):
-    packed_type = torch.float32
-    def __init__(self, name: str, channels: int, channel_size: int, **args: Any) -> None:
-        #self.data_path = data_path
-        self.channels = channels
-        self.channel_size = channel_size
-        super(AudioProperty, self).__init__(name, **args)
-    def pack(self, v: Any) -> Any:
-        return numpy.random.random((1000, self.channels)).tolist()
-    def unpack(self, v: Any) -> Any:
-        return v
-    @property
-    def stacked_type(self) -> torch.dtype:
+    def stacked_type(self):
         return torch.float32    
     @property
-    def missing_value(self) -> float:
-        return float("nan") #numpy.full((1, self.channels), float("nan")).tolist()
-    def __len__(self) -> int:
+    def missing_value(self):
+        return float("nan")
+    def __str__(self):
+        return "{0}: {1}".format(self.name, self.type_name, self.min_val, self.max_val)
+    def __len__(self):
         return 1
-    def observe_value(self, v: float) -> None:
-        if v:
-            self.empty = False
 
-class VideoProperty(DataProperty[str, List[List[List[List[int]]]], int]):
-    packed_type = torch.float32        
-    def __init__(self, name: str, width: int, height: int, channels: int, channel_size: int, **args: Any) -> None:
-        #self.data_path = data_path
-        self.width = width
-        self.height = height
-        self.channels = channels
-        self.channel_size = channel_size
-        super(VideoProperty, self).__init__(name, **args)
-    def pack(self, v: Any) -> Any:
-        return numpy.random.random((1, self.width, self.height, self.channels)).tolist()
-    def unpack(self, v: Any) -> Any:
+    
+class ScalarProperty(DataProperty):
+    def __init__(self, name, spec, data, **args):
+        super(ScalarProperty, self).__init__(name, spec, **args)
+        self.max_val = None
+        self.min_val = None
+    def observe_value(self, v):
+        if v:
+            self.max_val = v if self.max_val == None else max(self.max_val, v)
+            self.min_val = v if self.min_val == None else min(self.min_val, v)
+            self.empty = False
+    def unpack(self, v):
         return v
+    def pack(self, v):
+        return float(v)
     @property
-    def stacked_type(self) -> torch.dtype:
+    def stacked_type(self):
         return torch.float32    
     @property
-    def missing_value(self) -> float:
-        return float("nan") #numpy.full((1000, self.width, self.height, self.channels), float("nan")).tolist()
-    def __len__(self) -> int:
+    def missing_value(self):
+        return float("nan")
+    def __str__(self):
+        return "{0}: {1}".format(self.name, self.type_name, self.min_val, self.max_val)
+    def __len__(self):
         return 1
-    def observe_value(self, v: float) -> None:
-        if v:
-            self.empty = False
 
-class CategoricalProperty(DataProperty[None, str, int]):
-    #missing_value = 0
-    #packed_type = int
-    def __init__(self, name: str, **args: Any) -> None:
-        super(CategoricalProperty, self).__init__(name, **args)
-        self.item_to_id: Dict[str, int] = {} #Missing() : self.missing_value}
-        self.id_to_item: Dict[int, str] = {} #self.missing_value : Missing()}
-         
-    def observe_value(self, v: str) -> None:
-        i = self.item_to_id.setdefault(v, len(self.item_to_id) + 1)
-        self.id_to_item[i] = v
-        self.empty = False
-   
-    def pack(self, v: Optional[str]) -> int:
-        # redundant!
-        return (self.missing_value if v is None else self.item_to_id.get(v, self.missing_value)) #.get(v, self.missing_value)
-
-    def unpack(self, v: List[int]) -> Optional[str]: # type: ignore
-        #vv = numpy.array(v)
-        #print(v)
-        #sys.exit()
-        #print(v)
-        return self.id_to_item.get(v) #vv.argmax())
-        #if isinstance(v, torch.Tensor):
-        #    if v.dtype == torch.int64:
-        #        v = v.item()
-        #    else:
-        #        v = v.argmax().item()                
-        #if v not in self._rlookup:
-        #    raise Exception("Could not unpack value '{0}' (type={1})".format(v, type(v)))
-        #return self._rlookup[v]
-    
-    def __str__(self) -> str:
-        #return "{1} field: {0}[{2}]".format(self.name, self.type_name, len(self))
-        return "{0}: {1}".format(self.name, self.type_name)
-    def __len__(self) -> int:
-        return len(self.item_to_id) + 1
-    @property
-    def stacked_type(self) -> torch.dtype:
-        return torch.int64
-    @property
-    def missing_value(self) -> int:
-        return 0
-
-class SequenceProperty(DataProperty[None, Any, List[int]]):
-    def __init__(self, name: str, split_func, join_func, **args: Any) -> None:
-        super(SequenceProperty, self).__init__(name, **args)
-        self.split_func = split_func
-        self.join_func = join_func
-        self.item_to_id: Dict[str, int] = {} #{None : 0}
-        self.id_to_item: Dict[int, str] = {} #{0 : None}
-        self.max_length = 2
-    
-    def observe_value(self, vs: Any) -> None:
-        values = self.split_func(vs)
-        for v in values:
-            i = self.item_to_id.setdefault(v, len(self.item_to_id) + 4)
-            self.id_to_item[i] = v
-        self.max_length = max(len(values) + 2, self.max_length)
-        self.empty = False
-
-    def __str__(self) -> str:
-        return "{0}: {1} ({2} distinct values, max length {3})".format(self.name, self.type_name, len(self), self.max_length)
-
-    def pack(self, v: Optional[Any]) -> List[int]:
-        #items = (self.missing_value if v is None else [self.item_to_id.get(e, self.unknown_value) for e in self.split_func(v)[0:self.max_length]])
-        items = (self.missing_value if v is None else [self.item_to_id.get(e, self.unknown_value) for e in self.split_func(v)])
-        #items = ([] if v is None else [self.item_to_id.get(e, self.unknown_value) for e in self.split_func(v)])
-        return [self.start_value] + items + [self.end_value] + [self.padding_value] * (self.max_length - len(items))
-
-    def unpack(self, v: Any) -> Optional[Any]:
-        try:
-            return self.join_func([self.id_to_item.get(e, "") for e in v])
-        except:
-            return ""
-
-    def __len__(self) -> int:
-        return len(self.id_to_item) + 4
-              
-    @property
-    def stacked_type(self) -> torch.dtype:
-        return torch.int64
-    @property
-    def missing_value(self) -> List[int]:
-        return []
-    @property
-    def unknown_value(self) -> int:
-        return 1    
-    @property
-    def padding_value(self) -> int:
-        return 0
-    @property
-    def start_value(self) -> int:
-        return 2
-    @property
-    def end_value(self) -> int:
-        return 3
-        
-class CharacterSequenceProperty(SequenceProperty):
-    def __init__(self, name: str, **args: Any):
-        super(CharacterSequenceProperty, self).__init__(name, list, "".join, **args)    
-
-class WordSequenceProperty(SequenceProperty):
-    def __init__(self, name: str, **args: Any):
-        super(WordSequenceProperty, self).__init__(name, str.split, " ".join, **args)
 
 class PlaceProperty(NumericProperty):
     def __len__(self):
         return 2
-
     def pack(self, v):
-        return self.missing_value if v == None else [v["latitude"], v["longitude"]]
-    
+        return self.missing_value if v == None else [v["latitude"], v["longitude"]]    
     def unpack(self, v):
-        return {"latitude" : v[0], "longitude" : v[1]}
-
+        return {"latitude" : v[0].item(), "longitude" : v[1].item()}
     def observe_value(self, v):
         self.empty = False
-
     @property
     def missing_value(self):
         return [float("nan"), float("nan")]
-
     @property
     def stacked_type(self):
         return torch.float32
-
-    def __str__(self) -> str:
+    def __str__(self):
         return "{0}: {1}".format(self.name, self.type_name)    
 
 
 class DistributionProperty(NumericProperty):
-    def __init__(self, name: str, **args: Any):
-        self.label_to_index = {}
-        self.index_to_label = {}
-        super(DistributionProperty, self).__init__(name, **args)
-
+    def __init__(self, name, spec, data, **args):
+        labels = set()
+        self.is_log = None
+        for e in data.entities:
+            for k, v in e.get(name, {}).items():
+                labels.add(k)
+                if v > 0.0:
+                    if self.is_log == True:
+                        raise Exception("Saw log-probability of {}".format(v))
+                    else:
+                        self.is_log == False
+                if v < 0.0:
+                    if self.is_log == False:
+                        raise Exception("Saw probability of {}".format(v))
+                    else:
+                        self.is_log == True
+                
+        self.label_to_index = {l : i + 1 for i, l in enumerate(labels)}
+        self.label_to_index[None] = 0        
+        self.index_to_label = {v : k for k, v in self.label_to_index.items()}
+        self.eps = 0.000000000000001
+        super(DistributionProperty, self).__init__(name, spec, data, **args)
     def __len__(self):
         return len(self.label_to_index)
-
     def pack(self, v):
-        #return self.missing_value if v == None else [v.get(self.index_to_label[i], float("-inf")) for i in range(len(self.index_to_label))]
-        #retval = self.missing_value if v == None else [math.log(v.get(self.index_to_label[i], float(0.000000000000001))) for i in range(len(self.index_to_label))]
         if self.is_log:
-            retval = self.missing_value if v == None else [v.get(self.index_to_label[i], 0.0) for i in range(len(self.index_to_label))]
+            retval = self.missing_value if v == None else [
+                float(v.get(self.index_to_label[i], 0.0)) for i in range(len(self.index_to_label))
+            ]
         else:
-            retval = self.missing_value if v == None else [math.log(v.get(self.index_to_label[i], 0.0) +  float(0.000000000000000000000000001)) for i in range(len(self.index_to_label))]
-        #print(sum(retval))
-        return retval
-    
+            retval = self.missing_value if v == None else [
+                float(math.log(v.get(self.index_to_label[i], 0.0) + self.eps))
+                for i in range(len(self.index_to_label))
+            ]
+        return retval    
     def unpack(self, v):
         return {self.index_to_label[i] : v[i] for i in range(len(self.index_to_label))}
-
     def observe_value(self, value):
         self.is_log = None
         self.empty = False
@@ -487,16 +202,238 @@ class DistributionProperty(NumericProperty):
                     raise Exception("Saw negative value (%d), but expected probabilities", v)
             i = self.label_to_index.setdefault(k, len(self.label_to_index))
             self.index_to_label[i] = k
-
     @property
     def missing_value(self):
         return [0.0 for i in range(len(self.index_to_label))]
-        #return [float("nan") for i in range(len(self.index_to_label))]
-
     @property
     def stacked_type(self):
         return torch.float32
-
     def __str__(self) -> str:
         return "{0}: {1}".format(self.name, self.type_name)    
+
     
+class DateProperty(NumericProperty):
+    def pack(self, v):
+        retval = None
+        fmts = self.spec["meta"]["format"]
+        for fmt in fmts if isinstance(fmts, list) else [fmts]:
+            try:
+                retval = datetime.strptime(v, fmt).toordinal()
+                self.seen_format = fmt
+            except:
+                pass
+        if retval == None:
+            raise Exception("Could not parse date string: '{}'".format(v))
+        return float(retval)
+    def unpack(self, v):
+        #try:
+        #    for form in self.args["format"] if isinstance(self.args["format"], list) else [self.args["format"]]:
+        return None if numpy.isnan(v) or v < 1 else date.fromordinal(int(v)).strftime(self.seen_format)
+        #except:
+        #    return None
+
+
+class DateTimeProperty(NumericProperty):
+    def pack(self, v):        
+        retval = float("nan")
+        fmts = self.spec["meta"]["format"]
+        for fmt in fmts if isinstance(fmts, list) else [fmts]:
+            try:
+                retval = datetime.strptime(v, fmt).toordinal()
+            except:
+                pass
+        return retval
+    def unpack(self, v):
+        try:
+            return None if numpy.isnan(v) or v < 1 else datetime.fromordinal(int(v)).strftime(self.args["format"])
+        except:
+            return None
+
+
+class ImageProperty(DataProperty):
+    def __init__(self, name, spec, data, **args):
+        self.width = spec["meta"]["width"]
+        self.height = spec["meta"]["height"]
+        self.channels = spec["meta"]["channels"]
+        self.channel_size = spec["meta"]["channel_size"]
+        super(ImageProperty, self).__init__(name, spec, **args)
+    def pack(self, v):
+        """
+        Parameters
+        ----------
+        v : tensor-like of shape :math: (\text{width}, \text{height}, \text{channels})
+
+        Returns
+        -------
+        Tensor of shape :math: (\text{channels}, \text{
+        """
+        retval = self.missing_value if v == None else torch.tensor(v).tolist()
+        return retval    
+    def unpack(self, v):
+        return v if isinstance(v, list) else v.tolist()
+    @property
+    def stacked_type(self):
+        return torch.float32
+    @property
+    def missing_value(self):
+        return numpy.full((self.width, self.height, self.channels), float("nan")).tolist()
+    def __len__(self):
+        return 1
+    def observe_value(self, v):
+        if v:
+            self.empty = False
+
+
+class AudioProperty(DataProperty):
+    packed_type = torch.float32
+    def __init__(self, name, spec, data, **args):
+        self.channels = channels
+        self.channel_size = channel_size
+        super(AudioProperty, self).__init__(name, **args)
+    def pack(self, v):
+        return numpy.random.random((1000, self.channels)).tolist()
+    def unpack(self, v):
+        return v
+    @property
+    def stacked_type(self):
+        return torch.float32    
+    @property
+    def missing_value(self):
+        return float("nan")
+    def __len__(self):
+        return 1
+    def observe_value(self, v):
+        if v:
+            self.empty = False
+
+
+class VideoProperty(DataProperty):
+    packed_type = torch.float32        
+    def __init__(self, name, spec, data, **args):
+        self.width = width
+        self.height = height
+        self.channels = channels
+        self.channel_size = channel_size
+        super(VideoProperty, self).__init__(name, **args)
+    def pack(self, v):
+        return numpy.random.random((1, self.width, self.height, self.channels)).tolist()
+    def unpack(self, v):
+        return v
+    @property
+    def stacked_type(self):
+        return torch.float32    
+    @property
+    def missing_value(self):
+        return float("nan")
+    def __len__(self):
+        return 1
+    def observe_value(self, v):
+        if v:
+            self.empty = False
+
+
+class CategoricalProperty(DataProperty):
+    def __init__(self, name, spec, data, **args):
+        super(CategoricalProperty, self).__init__(name, spec, **args)
+        self.item_to_id = {}
+        self.id_to_item = {}
+        for item in data:
+            if name in item:
+                self.observe_value(item[name])         
+    def observe_value(self, v):
+        i = self.item_to_id.setdefault(v, len(self.item_to_id) + 1)
+        self.id_to_item[i] = v
+        self.empty = False
+    def pack(self, v):
+        # redundant!
+        return (self.missing_value if v is None else self.item_to_id.get(v, self.missing_value))
+    def unpack(self, v):
+        return self.id_to_item.get(v)
+    def __str__(self):
+        return "{0}: {1}".format(self.name, self.type_name)
+    def __len__(self):
+        return len(self.item_to_id) + 1
+    @property
+    def stacked_type(self):
+        return torch.int64
+    @property
+    def missing_value(self):
+        return 0
+
+
+class SequenceProperty(DataProperty):
+    def __init__(self, name, spec, data, split_func, join_func, **args):
+        super(SequenceProperty, self).__init__(name, spec, **args)
+        self.split_func = split_func
+        self.join_func = join_func
+        self.item_to_id = {}
+        self.id_to_item = {}
+        self.max_length = 2
+        for item in data:
+            if name in item:
+                self.observe_value(item[name])    
+    def observe_value(self, vs):
+        values = self.split_func(vs)
+        for v in values:
+            i = self.item_to_id.setdefault(v, len(self.item_to_id) + 4)
+            self.id_to_item[i] = v
+        self.max_length = max(len(values) + 2, self.max_length)
+        self.empty = False
+    def __str__(self):
+        return "{0}: {1} ({2} distinct values, max length {3})".format(
+            self.name,
+            self.type_name,
+            len(self),
+            self.max_length
+        )
+    def pack(self, v):
+        items = (
+            self.missing_value if v is None else [
+                self.item_to_id.get(e, self.unknown_value) for e in self.split_func(v)
+            ]
+        )
+        if len(items) > self.max_length:
+            items = items[:self.max_length]
+        return sum(
+            [
+                [self.start_value],
+                items,
+                [self.end_value],
+                [self.padding_value] * (self.max_length - len(items))
+            ],
+            []
+        )
+    def unpack(self, v):
+        return self.join_func([self.id_to_item.get(e, "") for e in v])
+    def __len__(self):
+        return len(self.id_to_item) + 4              
+    @property
+    def stacked_type(self):
+        return torch.int64
+    @property
+    def missing_value(self):
+        return []
+    @property
+    def unknown_value(self):
+        return 1    
+    @property
+    def padding_value(self):
+        return 0
+    @property
+    def start_value(self):
+        return 2
+    @property
+    def end_value(self):
+        return 3
+
+
+class CharacterSequenceProperty(SequenceProperty):
+    def __init__(self, name, spec, data, **args):
+        super(CharacterSequenceProperty, self).__init__(name, spec, data, list, "".join, **args)    
+
+
+class WordSequenceProperty(SequenceProperty):
+    def __init__(self, name, spec, data, **args):
+        super(WordSequenceProperty, self).__init__(name, spec, data, str.split, " ".join, **args)
+
+

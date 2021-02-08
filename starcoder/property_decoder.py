@@ -26,10 +26,12 @@ class CategoricalDecoder(PropertyDecoder):
         super(CategoricalDecoder, self).__init__()
         self._input_size = input_size
         self._output_size = len(property)
-        self._layerA = torch.nn.Linear(self._input_size, self._input_size // 2)
-        self._layerB = torch.nn.Linear(self._input_size // 2, self._output_size)
+        self._layerA = torch.nn.Linear(self._input_size, self._output_size)
+        self._layerB = torch.nn.Linear(self._output_size, self._output_size)
         self.activation = activation
+        self.name = property.name
     def forward(self, x: Tensor) -> Tensor:
+        #print(self.name, x.shape)
         x = self.activation(self._layerA(x))
         x = self._layerB(x)
         x = torch.nn.functional.log_softmax(x, dim=1)
@@ -52,7 +54,7 @@ class NullDecoder(PropertyDecoder):
         #self.final = torch.nn.Linear(input_size, self.dims)
         #self.activation = activation
     def forward(self, x: Tensor) -> Tensor:
-        return torch.tensor(0.0)
+        return torch.zeros(size=(x.shape[0], 0), device=x.device)
         #retval = self.final(self.activation(self.linear(x)))
         #return retval
     @property
@@ -102,6 +104,12 @@ class ScalarDecoder(NumericDecoder):
     def normalize(self, v):
         return v.flatten()
 
+class PlaceDecoder(NumericDecoder):
+    def __init__(self, property: NumericProperty, input_size: int, activation: Activation, **args: Any) -> None:
+        super(PlaceDecoder, self).__init__(property, input_size, activation, dims=2)
+    def normalize(self, v):
+        return v.flatten()
+
 
 class AudioDecoder(PropertyDecoder):
     def __init__(self, property: DataProperty, input_size: int, activation: Activation, **args: Any) -> None:
@@ -138,9 +146,12 @@ class VideoDecoder(PropertyDecoder):
 class ImageDecoder(PropertyDecoder):
     def __init__(self, property: DataProperty, input_size: int, activation: Activation, **args: Any) -> None:
         super(ImageDecoder, self).__init__()
-        out_size = property.width*property.height*property.channels
+        self.channels = 3
+        out_size = property.width*property.height*self.channels
         linear_layers = [torch.nn.Linear(input_size, out_size)]
-        self.deconv = torch.nn.Conv2d(3, 3, (3,3), stride=1, padding=1)
+
+        self.deconvA = torch.nn.Conv2d(self.channels, 3, (3,3), stride=1, padding=1)
+        self.deconvB = torch.nn.Conv2d(self.channels, 3, (3,3), stride=1, padding=1)
         self.property = property
         #for _ in range(2):
         #    linear_layers.append(torch.nn.Linear(linear_layers[-1].out_features, out_size, bias=False))
@@ -158,8 +169,9 @@ class ImageDecoder(PropertyDecoder):
         """
         # batch, chan, height, width
         x = self.activation(self.layers[0](x))
-        x = x.reshape((x.shape[0], self.property.channels, self.property.height, self.property.width))
-        x = self.deconv(x)        
+        x = x.reshape((x.shape[0], self.channels, self.property.height, self.property.width))
+        x = self.activation(self.deconvA(x))
+        x = self.deconvB(x)
         x = x.permute(0, 3, 2, 1)
         #return x
         #for i in range(len(self.layers) - 1):

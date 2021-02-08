@@ -1,99 +1,108 @@
-import pickle
-import re
-import argparse
-import json
-import gzip
-import functools
-
 import logging
-import numpy
 import scipy.sparse
-from sklearn.metrics import f1_score, accuracy_score
 from scipy.sparse.csgraph import connected_components
 import torch
-import math
-import uuid
-from starcoder.random import random
-from starcoder.entity import UnpackedEntity, PackedEntity, ID, Index
-from starcoder.property import UnpackedValueType, PackedValueType
-from starcoder.adjacency import Adjacency, Adjacencies
-from starcoder.schema import Schema
-from typing import List, Dict, Any, Tuple, Sequence, Hashable, MutableSequence, NewType, cast
 
 logger = logging.getLogger(__name__)
 
-class Dataset(torch.utils.data.Dataset): # type: ignore
+
+class Dataset(torch.utils.data.Dataset):
     """
     The Dataset class is needed mainly for operations that depend on
     graph structure, particularly those that require connected components.
     A Dataset is, basically, a Schema and a list of JSON objects.
     """
-    def __init__(self, schema: Schema, entities: MutableSequence[Dict[str, Any]], strict: bool=True):
+    def __init__(self, schema, entities, strict=True):
         super(Dataset, self).__init__()
         self.schema = schema
-        known_property_names = schema.all_property_names
+        known_property_names = sum(
+            [
+                list(schema["properties"].keys()),
+                list(schema["relationships"].keys()),
+                [schema["id_property"], schema["entity_type_property"]]
+            ],
+            []
+        )
         self.entities = []
-        self.id_to_index: Dict[ID, Index] = {}
-        self.index_to_id: Dict[Index, ID] = {}
-        for idx, entity in [(cast(Index, x), y) for x, y in enumerate(entities)]:
-            entity_id = cast(ID, entity[self.schema.id_property.name])
+        self.id_to_index = {}
+        self.index_to_id = {}
+        for idx, entity in [(x, y) for x, y in enumerate(entities)]:
+            entity_id = entity[self.schema["id_property"]]
             if entity_id in self.id_to_index:
                 raise Exception("Entity with id '{}' already exists".format(entity_id))
-            #assert entity_id not in self.id_to_index
-            #assert idx not in self.index_to_id
             self.id_to_index[entity_id] = idx
-            self.index_to_id[idx] = entity_id #[self.schema.id_field.name]
+            self.index_to_id[idx] = entity_id
             for k in entity.keys():
-                if k not in known_property_names and strict==True:
+                if k not in known_property_names:
                     raise Exception("Unknown property: '{}'".format(k))
             self.entities.append(entity)
-        self.edges: Dict[str, Dict[int, MutableSequence[int]]] = {}
+        self.edges = {}
         for entity in self.entities:
-            entity_type = entity[self.schema.entity_type_property.name]
-            if entity_type not in self.schema.entity_types:
-                continue
-            entity_id = entity[self.schema.id_property.name]
+            entity_type = entity[self.schema["entity_type_property"]]
+            if entity_type not in self.schema["entity_types"]:
+                raise Exception("Unknown entity type: '{}'".format(entity_type))
+            entity_id = entity[self.schema["id_property"]]
             source_index = self.id_to_index[entity_id]            
-            for relationship in self.schema.entity_types[entity_type].relationships:
+            for relationship in [r for r, s in 
+                                 self.schema["relationships"].items() 
+                                 if s["source_entity_type"] == entity_type]:
                 target_ids = entity.get(relationship, [])
                 for target in target_ids if isinstance(target_ids, list) else [target_ids]:
                     if target not in self.id_to_index:
                         if strict:
-                            raise Exception("Could not find target %s for entity %s relationship %s", target, entity_id, relationship)
-                        continue
+                            raise Exception(
+                                "Could not find target '{}' for entity '{}' relationship '{}'".format(
+                                    target,
+                                    entity_id,
+                                    relationship
+                                )
+                            )
+                        else:
+                            continue
                     target_index = self.id_to_index[target]
                     self.edges[relationship] = self.edges.get(relationship, {})
                     self.edges[relationship][source_index] = self.edges[relationship].get(source_index, [])
                     self.edges[relationship][source_index].append(target_index)
         self.update_components()
         
-    def get_type_ids(self, *type_names: Sequence[str]) -> List[ID]:
+    def get_type_ids(self, *type_names):
         retval = []
         for i in self.ids:
-            if self.entity(i)[self.schema.entity_type_property.name] in type_names:
+            if self.entity(i)[self.schema["entity_type_property"]] in type_names:
                 retval.append(i)
         return retval
 
-    def subselect_entities_by_id(self, ids: Sequence[ID], invert: bool=False) -> "Dataset":
+    def subselect_entities_by_id(self, ids, invert=False, strict=True):
         if invert:
-            data = Dataset(self.schema, [self.entities[i] for i in range(len(self)) if self.index_to_id[cast(Index, i)] not in ids], strict=False)
+            data = Dataset(
+                self.schema, 
+                [self.entities[i] for i in range(len(self)) if self.index_to_id[i] not in ids], 
+                strict=True
+            )
         else:
             # this should never fail lookup, but...also, commit or don't to always using strings
-            data = Dataset(self.schema, [self.entities[self.id_to_index[eid]] for eid in ids if eid in self.id_to_index], strict=False)
+            data = Dataset(
+                self.schema, 
+                [self.entities[self.id_to_index[eid]] for eid in ids if eid in self.id_to_index], 
+                strict=strict
+            )
         return data
     
-    def subselect_entities(self, ids: Sequence[ID], invert: bool=False) -> "Dataset":
+    def subselect_entities(self, ids, invert=False):
         return self.subselect_entities_by_id(ids, invert)
 
-    def subselect_components(self, indices: Sequence[int]) -> "Dataset":
-        return Dataset(self.schema, [self.entities[self.id_to_index[eid]] for eid in sum([self.components[i][0] for i in indices], [])])
+    def subselect_components(self, indices):
+        return Dataset(
+            self.schema, 
+            [self.entities[self.id_to_index[eid]] for eid in sum([self.components[i][0] for i in indices], [])]
+        )
 
     @property
-    def ids(self) -> List[ID]:
+    def ids(self):
         return [i for i in self.id_to_index.keys()]
 
     @property
-    def aggregate_adjacencies(self) -> Adjacency:
+    def aggregate_adjacencies(self):
         rows, cols, vals = [], [], []
         for _, rs in self.edges.items():
             for r, cs in rs.items():
@@ -103,40 +112,22 @@ class Dataset(torch.utils.data.Dataset): # type: ignore
                     vals.append(True)
         adjacency = scipy.sparse.csr_matrix((vals, (rows, cols)), 
                                             shape=(self.num_entities, self.num_entities), 
-                                            dtype=numpy.bool)
+                                            dtype=bool)
         return adjacency
         
-    def update_components(self) -> None:
-        # # create union adjacency matrix
-        # rows, cols, vals = [], [], []
-        # for _, rs in self.edges.items():
-        #     for r, cs in rs.items():
-        #         for c in cs:
-        #             rows.append(r)
-        #             cols.append(c)
-        #             vals.append(True)
-        # adjacency = scipy.sparse.csr_matrix((vals, (rows, cols)), 
-        #                                     shape=(self.num_entities, self.num_entities), 
-        #                                     dtype=numpy.bool)
+    def update_components(self):
         adjacency = self.aggregate_adjacencies
-        # create list of connected components
         num, ids = connected_components(adjacency)
-        components_to_indices: Dict[int, MutableSequence[Index]] = {}    
+        components_to_indices = {}    
         for i, c in enumerate(ids):
             components_to_indices[c] = components_to_indices.get(c, [])
-            components_to_indices[c].append(cast(Index, i))
-            
-        #largest_component_size = 0 if len(components) == 0 else max([len(x) for x in components.values()])
+            components_to_indices[c].append(i)
         if len(components_to_indices) == 0:
-            raise Exception("The data is empty: this probably isn't what you want.  Perhaps add more instances, or adjust the train/dev/test split proportions?")
-        
-        self.components: MutableSequence[Tuple[List[ID], Adjacencies]] = []
-        #reveal_type(components_to_indices)
+            raise Exception("This dataset is empty!")        
+        self.components = []
         for indices in components_to_indices.values():
-            #reveal_type(indices)
-            #component_adjacencies = {} #{k : numpy.full((len(c), len(c)), False) for k in self.edges.keys()}
-            ca_rows: Dict[Any, Any] = {}
-            ca_cols: Dict[Any, Any] = {}
+            ca_rows = {}
+            ca_cols = {}
             g2l = {k : v for v, k in enumerate(indices)}
             for gsi in indices:
                 lsi = g2l[gsi]
@@ -144,45 +135,60 @@ class Dataset(torch.utils.data.Dataset): # type: ignore
                     ca_rows[rel_type] = ca_rows.get(rel_type, [])
                     ca_cols[rel_type] = ca_cols.get(rel_type, [])
                     for gti in rows.get(gsi, []):
-                        lti = g2l[cast(Index, gti)]
+                        lti = g2l[gti]
                         ca_rows[rel_type].append(lsi)
                         ca_cols[rel_type].append(lti)
-                        #component_adjacencies[rel_type][lsi, lti] = True
-            component_adjacencies = {rel_type : scipy.sparse.csr_matrix(([True for _ in ca_rows[rel_type]], (ca_rows[rel_type], ca_cols[rel_type])), 
-                                                                 shape=(len(indices), len(indices)), dtype=numpy.bool) for rel_type in self.edges.keys()}
-            self.components.append(([self.index_to_id[c] for c in indices], component_adjacencies)) # = [c for c in components.values()]
+            component_adjacencies = {
+                rel_type : scipy.sparse.csr_matrix(
+                    (
+                        [True for _ in ca_rows[rel_type]],
+                        (ca_rows[rel_type], ca_cols[rel_type])
+                    ),
+                    shape=(len(indices), len(indices)),
+                    dtype=bool
+                ) for rel_type in self.edges.keys()
+            }
+            self.components.append(
+                (
+                    [self.index_to_id[c] for c in indices],
+                    component_adjacencies
+                )
+            )
 
     @property
-    def num_components(self) -> int:
+    def num_components(self):
         return len(self.components)
 
     @property
-    def num_entities(self) -> int:
+    def num_entities(self):
         return len(self.entities)
     
-    def component_ids(self, i: int) -> List[ID]:
+    def component_ids(self, i):
         return self.components[i][0]
 
-    def component_adjacencies(self, i: int) -> Adjacencies:
+    def component_adjacencies(self, i):
         return self.components[i][1]
 
-    def entity(self, i: ID) -> UnpackedEntity:
+    def entity(self, i):
         return self.entities[self.id_to_index[i]]
     
-    def component(self, i: int) -> Tuple[List[UnpackedEntity], Adjacencies]:
+    def component(self, i):
         entity_ids, adjacencies = self.components[i]
+        return (
+            [self.entity(i) for i in entity_ids],
+            adjacencies.copy()
+        )
 
-        #entities = [self.entity(i) for i in entity_indices]
-        #assert all([len(entities) == v.shape[0] for v in adjacencies.values()])
-        return ([self.entity(i) for i in entity_ids], adjacencies.copy())
+    def __getitem__(self, i):
+        return self.entities[i]
 
-    #@property
-    #def num_components(self) -> int:
-    #    return len(self.components)
+    def __len__(self):
+        return len(self.entities)
 
     def __str__(self) -> str:
         return "Dataset({} entities, {} components)".format(self.num_entities,
                                                             self.num_components)
+
 
 if __name__ == "__main__":
     pass

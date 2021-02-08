@@ -29,52 +29,74 @@ from starcoder.base import StarcoderObject
 from abc import ABCMeta, abstractproperty, abstractmethod
 from starcoder.activation import Activation
 
+logger = logging.getLogger(__name__)
 
-class Summarizer(torch.nn.Module, metaclass=ABCMeta): # type: ignore[type-arg]
-    def __init__(self) -> None:
+
+class Summarizer(torch.nn.Module, metaclass=ABCMeta):
+    def __init__(self):
         super(Summarizer, self).__init__()
+    @abstractmethod
+    def forward(self, representations): pass
 
+
+class NullSummarizer(Summarizer):
+    def __init__(self, input_size):
+        super(NullSummarizer, self).__init__()
+    def forward(self, representations):
+        return torch.zeros(size=(representations.shape[1],), device=representations.device)
+    @property
+    def output_size(self):
+        return 0
 
 class RNNSummarizer(Summarizer):
-    def __init__(self, input_size: int, activation: Activation, rnn_type: Callable[..., Callable[[Tensor], Tensor]]=torch.nn.GRU) -> None:
+    def __init__(self, input_size, rnn_type=torch.nn.GRU):
         super(RNNSummarizer, self).__init__()
         self.layer = rnn_type(input_size, input_size, batch_first=True)
-    def forward(self, representations: Tensor) -> Tensor:
+    def forward(self, representations):
         out, h = self.layer(representations.unsqueeze(0))
         return h.squeeze()
 
 
 class MaxPoolSummarizer(Summarizer):
-    def __init__(self, input_size: int, activation: Activation) -> None:
+    def __init__(self, input_size):
         super(MaxPoolSummarizer, self).__init__()
         self.layer = torch.nn.MaxPool1d(1)
-    def forward(self, x: Tensor) -> Union[Tensor, Tuple[Tensor, Tensor]]:
-        return self.layer(x)
+    def forward(self, representations):
+        return self.layer(representations)
+
 
 class DANSummarizer(Summarizer):
-    def __init__(self, input_size: int, activation: Activation) -> None:
+    def __init__(self, input_size):
         super(DANSummarizer, self).__init__()
         self.layers = []
         self.sizes = [input_size, input_size, input_size]
         for i in range(len(self.sizes) - 1):
             self.layers.append(torch.nn.Linear(self.sizes[i], self.sizes[i + 1]))
         self.layers = torch.nn.ModuleList(self.layers)
-        self.activation = activation
-        
-    def forward(self, x: Tensor) -> Union[Tensor, Tuple[Tensor, Tensor]]:
-        x = torch.mean(x, 0)
+        self.activation = torch.nn.functional.relu
+        self._input_size = input_size
+    def forward(self, representations):
+        x = torch.mean(representations, 0)
         for layer in self.layers:
             x = self.activation(layer(x))
         return x
+    @property
+    def input_size(self):
+        return self._input_size
+    @property
+    def output_size(self):
+        return self._input_size
     
     
 class SingleSummarizer(Summarizer):
-    def __init__(self, input_size: int, activation: Activation) -> None:
+    def __init__(self, input_size):
         super(SingleSummarizer, self).__init__()
         self._input_size = input_size
-    def forward(self, x: Tensor) -> Tensor:
-        return x[0]
-    def input_size(self) -> int:
+    def forward(self, representations):
+        return representations[0]
+    @property
+    def input_size(self):
         return self._input_size
-    def output_size(self) -> int:
+    @property
+    def output_size(self):
         return self._input_size

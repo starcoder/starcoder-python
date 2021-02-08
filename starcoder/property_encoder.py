@@ -7,18 +7,19 @@ from typing import Type, List, Dict, Set, Any, Callable, Iterator, Union, Tuple,
 from abc import ABCMeta, abstractmethod, abstractproperty
 from torch import Tensor
 import torchvision
-#import torchaudio
 
 logger = logging.getLogger(__name__)
 
-class PropertyEncoder(StarcoderObject, torch.nn.Module, metaclass=ABCMeta): # type: ignore[type-arg]
+class PropertyEncoder(StarcoderObject, torch.nn.Module, metaclass=ABCMeta):
     def __init__(self, *argv: Any) -> None:
         super(PropertyEncoder, self).__init__()
     @abstractmethod
     def forward(self, x: Tensor) -> Tensor: pass
+    @abstractproperty
+    def input_size(self): pass
 
 class NullEncoder(PropertyEncoder):
-    def __init__(self, field: CategoricalProperty, activation: Activation, **args: Any) -> None:
+    def __init__(self, property: CategoricalProperty, **args: Any) -> None:
         super(NullEncoder, self).__init__()
     def forward(self, x):
         retval = torch.zeros(size=(x.shape[0], 0), device=x.device)
@@ -31,9 +32,9 @@ class NullEncoder(PropertyEncoder):
         return 0
     
 class CategoricalEncoder(PropertyEncoder):
-    def __init__(self, property: CategoricalProperty, activation: Activation, **args: Any) -> None:
+    def __init__(self, property: CategoricalProperty, **args: Any) -> None:
         super(CategoricalEncoder, self).__init__()
-        self._embeddings = torch.nn.Embedding(num_embeddings=len(property), embedding_dim=args.get("embedding_size", 32))
+        self._embeddings = torch.nn.Embedding(num_embeddings=len(property), embedding_dim=args.get("embedding_size", 256))
     def forward(self, x: Tensor) -> Tensor:
         retval = self._embeddings(x)
         return(retval)
@@ -45,56 +46,65 @@ class CategoricalEncoder(PropertyEncoder):
         return self._embeddings.embedding_dim
 
 class NumericEncoder(PropertyEncoder):
-    def __init__(self, field: NumericProperty, activation: Activation, **args: Any) -> None:
+    def __init__(self, property: NumericProperty, layers, **args: Any) -> None:
         super(NumericEncoder, self).__init__()
-        self.dims = args["dims"]
-        self.layers = torch.nn.ModuleList(
-            [
-                torch.nn.Linear(1, 10),
-                torch.nn.Linear(10, 10)
-            ]
-        )
-        self.activation = activation
-        
+        self._layers = torch.nn.ModuleList(layers)
+        self.activation = torch.nn.functional.relu
+        self.output_size = self._layers[-1].out_features
+        self.property = property
     def forward(self, x: Tensor) -> Tensor:
-        return self.activation(self.layers[1](self.activation(self.layers[0](x))))
+        for layer in self._layers:
+            x = self.activation(layer(x))
+        return x
+    @property
+    def layers(self):
+        return self._layers
     @property
     def input_size(self) -> int:
-        return self.dims
-    @property
-    def output_size(self) -> int:
-        return self.dims
+        return self._layers[0].in_features
 
-class DistributionEncoder(PropertyEncoder):
-    def __init__(self, field: DistributionProperty, activation: Activation, **args: Any) -> None:        
-        self.dims = len(field)
-        super(DistributionEncoder, self).__init__(field, activation, **args)
-        self.activation = activation
+class DistributionEncoder(NumericEncoder):
+    def __init__(self, property: DistributionProperty, **args: Any) -> None:        
+        super(DistributionEncoder, self).__init__(
+            property, 
+            torch.nn.ModuleList(
+                [
+                    torch.nn.Linear(len(property), len(property))
+                ]
+            ),
+            **args
+        )
 
-        self._output_size = 128
-        self._layerA = torch.nn.Linear(self.dims, self._output_size)
-        #self.linearB = torch.nn.Linear(self.dims, self.dims // 2)
-    @property
-    def input_size(self):
-        return self.dims
-    @property
-    def output_size(self):
-        return self._output_size
-    def forward(self, x):
-        #print(x.sum(1))
-        retval = self.activation(self._layerA(x))
-        return retval
 
 class ScalarEncoder(NumericEncoder):
-    def __init__(self, field: ScalarProperty, activation: Activation, **args: Any) -> None:
-        args["dims"] = 1
-        super(ScalarEncoder, self).__init__(field, activation, **args)
+    def __init__(self, property: ScalarProperty, **args: Any) -> None:
+        super(ScalarEncoder, self).__init__(property,
+                                            torch.nn.ModuleList(
+                                                [
+                                                    torch.nn.Linear(1, 10),
+                                                    torch.nn.Linear(10, 10)
+                                                ]
+                                            ),
+                                            **args)
     def forward(self, x: Tensor) -> Tensor:
-        retval = torch.as_tensor(torch.unsqueeze(x, 1), dtype=torch.float32, device=x.device)
-        return retval
+        x = x.unsqueeze(1)
+        for layer in self._layers:
+            x = self.activation(layer(x))
+        return x
+
+class PlaceEncoder(NumericEncoder):
+    def __init__(self, property: ScalarProperty, **args: Any) -> None:
+        super(PlaceEncoder, self).__init__(property,
+                                            torch.nn.ModuleList(
+                                                [
+                                                    torch.nn.Linear(2, 10),
+                                                    torch.nn.Linear(10, 10)
+                                                ]
+                                            ),
+                                            **args)
 
 class AudioEncoder(PropertyEncoder):
-    def __init__(self, field: DataProperty, activation: Activation, **args: Any) -> None:
+    def __init__(self, property: DataProperty, **args: Any) -> None:
         super(AudioEncoder, self).__init__()        
     def forward(self, x: Tensor) -> Tensor:
         retval = torch.as_tensor(torch.unsqueeze(x, 1), dtype=torch.float32, device=x.device)
@@ -104,7 +114,7 @@ class AudioEncoder(PropertyEncoder):
         return 1
 
 class VideoEncoder(PropertyEncoder):
-    def __init__(self, field: DataProperty, activation: Activation, **args: Any) -> None:
+    def __init__(self, property: DataProperty, **args: Any) -> None:
         super(VideoEncoder, self).__init__()        
     def forward(self, x: Tensor) -> Tensor:
         retval = torch.as_tensor(torch.unsqueeze(x, 1), dtype=torch.float32, device=x.device)
@@ -116,7 +126,7 @@ class VideoEncoder(PropertyEncoder):
 class _ImageEncoder(PropertyEncoder):
     """Implementation of all-convolutional architecture.
     """
-    def __init__(self, property: DataProperty, activation: Activation, **args: Any) -> None:
+    def __init__(self, property: DataProperty, **args: Any) -> None:
         super(ImageEncoder, self).__init__()
         self.model = torchvision.models.densenet161(pretrained=True)
         for name, p in self.model.named_parameters():
@@ -162,15 +172,19 @@ class _ImageEncoder(PropertyEncoder):
 class ImageEncoder(PropertyEncoder):
     """Implementation of all-convolutional architecture.
     """
-    def __init__(self, property: DataProperty, activation: Activation, **args: Any) -> None:
+    def __init__(self, property, **args):
         super(ImageEncoder, self).__init__()
         reductions = args.get("reductions", 0)
-        layers = [torch.nn.Conv2d(3, 3, (3,3), stride=1, padding=1)]
+        self.channels = 3
+        layers = [
+            torch.nn.Conv2d(3, self.channels, (3,3), stride=1, padding=1),
+            torch.nn.Conv2d(self.channels, self.channels, (3,3), stride=1, padding=1)
+        ]# * 2
         for i in range(reductions):
             pass
         self.property = property
         self.layers = torch.nn.ModuleList(layers)
-        self.activation = activation
+        self.activation = torch.nn.functional.relu
     def forward(self, x: Tensor) -> Tensor:
         """
         Parameters
@@ -194,22 +208,127 @@ class ImageEncoder(PropertyEncoder):
         return retval
     @property
     def output_size(self) -> int:
-        return self.property.width * self.property.height * self.property.channels
+        return self.property.width * self.property.height * self.channels #self.property.channels
+    @property
+    def input_size(self):
+        pass
 
+
+class GRUEncoder(PropertyEncoder):
+    def __init__(self, property: SequenceProperty, **args: Any) -> None:
+        super(GRUEncoder, self).__init__()
+        self.property = property
+        es = args.get("embedding_size", 256)
+        hs = args.get("hidden_size", 640)
+        self._hidden_size = hs
+        rnn_type = args.get("rnn_type", torch.nn.GRU)
+        self.max_length = property.max_length #args.get("max_length", 1)
+        self._embeddings = torch.nn.Embedding(num_embeddings=len(property), embedding_dim=es)
+        self._rnn = rnn_type(es, hs, batch_first=True, bidirectional=False, num_layers=2, dropout=0.5)
+    def forward(self, x: Tensor) -> Tensor:
+        l = torch.count_nonzero(x, dim=1).cpu()
+        x = self._embeddings(x)
+        x = torch.nn.utils.rnn.pack_padded_sequence(x, l.cpu().numpy(), batch_first=True, enforce_sorted=False)
+        out, ht = self._rnn(x)
+        return ht[-1]
+    @property
+    def input_size(self) -> int:
+        return cast(int, self._rnn.input_size)
+    @property
+    def output_size(self) -> int:
+        return cast(int, self._rnn.hidden_size)
+
+class AttentionEncoder(PropertyEncoder):
+    def __init__(self, property: SequenceProperty, **args: Any) -> None:
+        super(AttentionEncoder, self).__init__()
+        self.property = property
+        es = args.get("embedding_size", 128)
+        self._embedding_size = es
+        #hs = args.get("hidden_size", 32)
+        #self._hidden_size = hs
+        #rnn_type = args.get("rnn_type", torch.nn.GRU)
+        self.max_length = property.max_length #args.get("max_length", 1)
+        self._embeddings = torch.nn.Embedding(num_embeddings=len(property), embedding_dim=es)
+        self._transformer = torch.nn.TransformerEncoderLayer(d_model=es, nhead=8, dropout=0.1)
+    def forward(self, x: Tensor) -> Tensor:
+        #l = torch.count_nonzero(x, dim=1).cpu()
+        x = self._embeddings(x)
+        out = self._transformer(x)
+        out = torch.mean(out, dim=1)
+        return out
+    @property
+    def input_size(self) -> int:
+        return None #cast(int, self._rnn.input_size)
+    @property
+    def output_size(self) -> int:
+        return self._embedding_size #cast(int, self._rnn.hidden_size)
+
+class CNNEncoder(PropertyEncoder):
+    def __init__(self, property: SequenceProperty, **args: Any) -> None:
+        super(CNNEncoder, self).__init__()
+        self.property = property
+        es = args.get("embedding_size", 256)
+        hs = args.get("hidden_size", 512)
+        self._max_width = args.get("width", 4)
+        self._cnns = torch.nn.ModuleList(
+            [
+                torch.nn.Conv1d(
+                    es, 
+                    es, 
+                    i, 
+                    padding=self._max_width, # - i, 
+                    padding_mode="zeros") 
+                for i in range(1, self._max_width + 1)
+            ]
+        )
+        self._hidden_size = hs # * (1 + len(self._cnns))
+        rnn_type = args.get("rnn_type", torch.nn.GRU)
+        self.max_length = property.max_length #args.get("max_length", 1)
+        self._embeddings = torch.nn.Embedding(num_embeddings=len(property), embedding_dim=es)
+        self._rnn = rnn_type(es * self._max_width, hs, batch_first=True, bidirectional=False, num_layers=2, dropout=0.5)
+    def forward(self, x: Tensor) -> Tensor:
+        l = torch.count_nonzero(x, dim=1).cpu()
+        x = self._embeddings(x)
+        convs = [] #x]
+        x = x.permute((0, 2, 1))
+        for i, net in enumerate(self._cnns, 1):
+            val = net(x).permute(0, 2, 1)
+            #print(val.shape)
+            convs.append(val[:, self._max_width - i:x.shape[2] + (self._max_width - i), :])
+        #print([t.shape for t in convs])
+        x = torch.cat(convs, 2)
+        seq_len = x.shape[1]
+        batches = x.shape[0]
+        hs = x.shape[2]
+        #print(x.shape)
+        #x = self._cnn(x)
+        #x = x.permute((0, 2, 1))
+        x = torch.nn.utils.rnn.pack_padded_sequence(x, l.cpu().numpy(), batch_first=True, enforce_sorted=False)
+        out, ht = self._rnn(x)
+        #ov, l = torch.nn.utils.rnn.pad_packed_sequence(out, batch_first=True)
+        #print(ov.shape, l.shape)
+        #sys.exit()
+        return ht[-1]
+    @property
+    def input_size(self) -> int:
+        return cast(int, self._rnn.input_size)
+    @property
+    def output_size(self) -> int:
+        return cast(int, self._rnn.hidden_size)
     
 class SequenceEncoder(PropertyEncoder):
-    def __init__(self, field: SequenceProperty, activation: Activation, **args: Any) -> None:
+    def __init__(self, property: SequenceProperty, **args: Any) -> None:
         super(SequenceEncoder, self).__init__()
-        self.field = field
+        self.property = property
         es = args.get("embedding_size", 32)
         hs = args.get("hidden_size", 64)
         self._hidden_size = hs
         rnn_type = args.get("rnn_type", torch.nn.GRU)
-        self.max_length = field.max_length #args.get("max_length", 1)
-        self._embeddings = torch.nn.Embedding(num_embeddings=len(field), embedding_dim=es)
+        self.max_length = property.max_length #args.get("max_length", 1)
+        self._embeddings = torch.nn.Embedding(num_embeddings=len(property), embedding_dim=es)
         self._rnn = rnn_type(es, hs, batch_first=True, bidirectional=False)
     def forward(self, x: Tensor) -> Tensor:
-        logger.debug("Starting forward pass of SequenceEncoder for '%s'", self.field.name)        
+        logger.debug("Starting forward pass of SequenceEncoder for '%s'", self.property.name)        
 
         # compute lengths of each sequence
         l = (x != 0).sum(1)
@@ -257,7 +376,8 @@ class SequenceEncoder(PropertyEncoder):
             subset = x.index_select(0, bucket_indices)[:, 0:subset_max_len]
 
             # compute bucket item lengths (should just select from l...)
-            subset_l = (subset != 0).sum(1)
+            # the pack function requires the lengths to be on CPU
+            subset_l = (subset != 0).sum(1).cpu()
 
             # embed bucket
             subset_embs = self._embeddings(subset)
@@ -285,18 +405,18 @@ class SequenceEncoder(PropertyEncoder):
         return cast(int, self._rnn.hidden_size)
 
 class DeepAveragingEncoder(SequenceEncoder):
-    def __init__(self, property, activation, **args):
+    def __init__(self, property, **args):
         super(DeepAveragingEncoder, self).__init__()
         self.property = property
         #es = args.get("embedding_size", 32)
         #hs = args.get("hidden_size", 64)
         #self._hidden_size = hs
         #rnn_type = args.get("rnn_type", torch.nn.GRU)
-        #self.max_length = field.max_length #args.get("max_length", 1)
-        self._embeddings = torch.nn.Embedding(num_embeddings=len(field), embedding_dim=es)
+        #self.max_length = property.max_length #args.get("max_length", 1)
+        self._embeddings = torch.nn.Embedding(num_embeddings=len(property), embedding_dim=es)
         self._rnn = rnn_type(es, hs, batch_first=True, bidirectional=False)
     def forward(self, x: Tensor) -> Tensor:
-        logger.debug("Starting forward pass of SequenceEncoder for '%s'", self.field.name)        
+        logger.debug("Starting forward pass of SequenceEncoder for '%s'", self.property.name)        
     @property
     def input_size(self) -> int:
         return cast(int, self._rnn.input_size)

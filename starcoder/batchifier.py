@@ -1,3 +1,4 @@
+import json
 import logging
 import numpy
 import scipy.sparse
@@ -6,23 +7,25 @@ import functools
 import argparse
 from starcoder.random import random
 from starcoder.configuration import Configurable
-from starcoder.schema import Schema
+#from starcoder.schema import Schema
 from starcoder.dataset import Dataset
 from starcoder.property import Property
-from starcoder.entity import UnpackedEntity, PackedEntity, ID, Index, StackedEntities, stack_entities
-from starcoder.adjacency import Adjacency, Adjacencies, stack_adjacencies
+from starcoder.utils import stack_adjacencies
+#from starcoder.entity import UnpackedEntity, PackedEntity, ID, Index, StackedEntities, stack_entities
+#from starcoder.adjacency import Adjacency, Adjacencies, stack_adjacencies
 from abc import ABCMeta, abstractmethod
 from typing import Type, List, Dict, Set, Any, Union, Tuple, Iterator
 from torch import Tensor
+import pandas
 
 logger = logging.getLogger(__name__)
 
-def components_to_batch(comps: List[Tuple[List[UnpackedEntity], Adjacencies]], data: Dataset) -> Tuple[StackedEntities, Adjacencies]:
-    entities: List[UnpackedEntity] = sum([es for es, _ in comps], [])    
-    return (stack_entities([data.schema.pack(e) for e in entities], data.schema.properties),
+def components_to_batch(comps):
+    entities = sum([es for es, _ in comps], [])    
+    return (entities,
             stack_adjacencies([a for _, a in comps]))
 
-def dataset_to_batch(dataset: Dataset) -> Tuple[StackedEntities, Adjacencies]:
+def dataset_to_batch(dataset):
     return components_to_batch(
         [dataset.component(i) for i in range(dataset.num_components)],
         dataset
@@ -30,10 +33,10 @@ def dataset_to_batch(dataset: Dataset) -> Tuple[StackedEntities, Adjacencies]:
 
 
 class Batchifier(Configurable, metaclass=ABCMeta):
-    def __init__(self, rest: Any) -> None:
+    def __init__(self, rest):
         super(Batchifier, self).__init__(rest)
     @abstractmethod
-    def __call__(self, data: "Dataset", batch_size: int) -> Iterator[Tuple[StackedEntities, Adjacencies]]: pass
+    def __call__(self, data, batch_size): pass
 
     
 class SampleEntities(Batchifier):
@@ -41,59 +44,60 @@ class SampleEntities(Batchifier):
         {"dest" : "shared_entity_types", "nargs" : "*", "default" : [], "help" : "Entity types to be shared across batches"},
         {"dest" : "share_at_connectivity", "default" : 1.0, "type" : float, "help" : "Minimum percent-connectivity at which to always share an entity"},
     ]
-    def __init__(self, vals: Any) -> None:
+    def __init__(self, schema, *vals):
         super(SampleEntities, self).__init__(vals)
-    def __call__(self, data: "Dataset", batch_size: int) -> Iterator[Tuple[StackedEntities, Adjacencies]]:
-        entities_to_duplicate = data.get_type_ids(*self.shared_entity_types) # type: ignore
-        other_entities = [i for i in data.ids if i not in entities_to_duplicate]
+        self.schema = schema
+    def __call__(self, data, batch_size):
+        entities_to_duplicate = data.get_type_ids(*self.schema["meta"]["shared_entity_types"]) # type: ignore
+        other_entities = [e for e in data.ids if e not in entities_to_duplicate]
         num_other_entities = batch_size - len(entities_to_duplicate)
         assert num_other_entities > 0
         random.shuffle(other_entities)
         while len(other_entities) > 0:
+            #batch = entities_to_duplicate + other_entities[:num_other_entities]
+            #other_entities = other_entities[num_other_entities:]
+            #yield batch
             ids = entities_to_duplicate + other_entities[:num_other_entities]
             other_entities = other_entities[num_other_entities:]
             new_data = data.subselect_entities(ids)
             comps = [new_data.component(i) for i in range(new_data.num_components)]
-            yield components_to_batch(comps, data)
+            yield components_to_batch(comps)
 
 
 class SampleComponents(Batchifier):
     arguments = [
         {"dest" : "shared_entity_types", "nargs" : "*", "default" : [], "help" : "Entity types to be shared across batches"},
     ]
-    def __init__(self, vals: Any) -> None:
-        super(SampleComponents, self).__init__(vals)
-    def __call__(self, data: "Dataset", batch_size: int) -> Iterator[Tuple[StackedEntities, Adjacencies]]:
-        entities_to_duplicate = data.get_type_ids(*self.shared_entity_types) # type: ignore
-        nonduplicate_entities_per_batch = batch_size - len(entities_to_duplicate)
-        assert nonduplicate_entities_per_batch > 0
-        if len(entities_to_duplicate) == 0:
-            nonduplicate_data = data
-        else:
-            nonduplicate_data = data.subselect_entities([i for i in data.ids if i not in entities_to_duplicate])
-        components = [i for i in range(nonduplicate_data.num_components)]
-        random.shuffle(components)
-        total = 0
-        current_batch: List[ID] = []
-        ids = []
-        while len(components) > 0 or len(ids) > 0:
-            if len(ids) == 0:
-                ids = [i for i in nonduplicate_data.component_ids(components[0])]
-                components = components[1:]
-            if len(current_batch) + len(ids) > nonduplicate_entities_per_batch:
-                if len(current_batch) > 0:
-                    logger.debug("Returning batch of size %d", len(current_batch))
-                    yield dataset_to_batch(data.subselect_entities(current_batch + entities_to_duplicate))
-                total += len(current_batch)
-                current_batch = ids[:nonduplicate_entities_per_batch]
-                ids = ids[len(current_batch):]
+    def __init__(self, schema):
+        super(SampleComponents, self).__init__(schema)
+        self.schema = schema
+    def __call__(self, data, batch_size):
+        shared_entity_types = self.schema["meta"]["shared_entity_types"]
+        shared_entities = data.get_type_ids(*shared_entity_types)
+        nonshared_entities_per_batch = batch_size - len(shared_entities)
+        assert nonshared_entities_per_batch > 0
+        logger.debug("Always including %d entities", len(shared_entities))
+
+        without_shared = data.subselect_entities_by_id([i for i in data.ids if i not in shared_entities], strict=False)
+        component_indices = [i for i in range(without_shared.num_components)]
+        logger.debug("Without shared entities there are %d components", len(component_indices))
+        random.shuffle(component_indices)
+        other_ids = []
+        while len(component_indices) > 0:
+            component_ids = without_shared.component_ids(component_indices[0])
+            component_indices = component_indices[1:]
+            if len(component_ids) > nonshared_entities_per_batch:
+                pass
+            elif len(component_ids) + len(other_ids) > nonshared_entities_per_batch:
+                new_data = data.subselect_entities_by_id(shared_entities + other_ids)
+                comps = [new_data.component(i) for i in range(new_data.num_components)]
+                yield components_to_batch(comps)
+                other_ids = component_ids
             else:
-                current_batch += ids
-                ids = []
-        if len(current_batch) > 0:
-            logger.debug("Returning batch of size %d", len(current_batch))            
-            yield dataset_to_batch(data.subselect_entities(current_batch + entities_to_duplicate))
-            total += len(current_batch)
+                other_ids += component_ids
+        new_data = data.subselect_entities_by_id(shared_entities + other_ids)
+        comps = [new_data.component(i) for i in range(new_data.num_components)]
+        yield components_to_batch(comps)
             
 
 class SampleSnowflakes(Batchifier):
@@ -102,9 +106,9 @@ class SampleSnowflakes(Batchifier):
         {"dest" : "shared_entity_types", "nargs" : "*", "default" : [], "help" : "Entity types to be shared across batches"},
         {"dest" : "neighbor_sample_probability", "default" : 0.5, "help" : "Probability of sampling each neighbor"},
     ]    
-    def __init__(self, rest: Any) -> None:
+    def __init__(self, rest):
         super(SampleSnowflakes, self).__init__(rest)
-    def __call__(self, data: "Dataset", batch_size: int) -> Iterator[Tuple[StackedEntities, Adjacencies]]:
+    def __call__(self, data, batch_size):
         entities_to_duplicate = data.get_type_ids(*self.shared_entity_types) # type: ignore
         other_entity_ids = [i for i in data.ids if i not in entities_to_duplicate]
         num_other_entities = batch_size - len(entities_to_duplicate)
@@ -137,4 +141,4 @@ class SampleSnowflakes(Batchifier):
                 batch = data.subselect_entities_by_id(batch_entities)
                 other_entities = other_entities.subselect_entities_by_id(batch_entities, invert=True)
             comps = [batch.component(i) for i in range(batch.num_components)]
-            yield components_to_batch(comps, data)
+            yield components_to_batch(comps)

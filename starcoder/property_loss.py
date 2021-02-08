@@ -2,184 +2,137 @@ from starcoder.base import StarcoderObject
 from starcoder.property import DataProperty, CategoricalProperty, NumericProperty, SequenceProperty, DistributionProperty
 import torch
 import logging
-from typing import Type, List, Dict, Set, Any, Callable, Iterator, Union, Tuple, Sequence, Sized, cast, TypeVar, Hashable, Generic
 from abc import ABCMeta, abstractmethod, abstractproperty
 from torch import Tensor
 import torchvision
-#import torchaudio
-
-Guess = TypeVar("Guess")
-Gold = TypeVar("Gold")
-
+import numpy
 
 logger = logging.getLogger(__name__)
 
-class PropertyLoss(StarcoderObject, Generic[Guess, Gold], torch.nn.Module, metaclass=ABCMeta):
-    def __init__(self, field: DataProperty[Any, Any, Any]) -> None:
+
+class PropertyLoss(StarcoderObject, torch.nn.Module, metaclass=ABCMeta):
+    def __init__(self, property):
         super(PropertyLoss, self).__init__()
-        self.field = field
+        self.property = property
     @abstractmethod
-    def __call__(self, guess: Guess, gold: Gold) -> Tensor: pass
-    #retval = self.compute(guess, gold)
-    #    assert retval.device == guess.device, self.field.name
-    #    return retval
-    #@abstractmethod
-    #def compute(self, guess: Any, gold: Any) -> Any: pass
+    def __call__(self, guess, gold): pass
+    def normalize(self, v):
+        return v
+
 
 class NullLoss(PropertyLoss):
-    def __init__(self, property) -> None:
+    def __init__(self, property):
         super(NullLoss, self).__init__(property)
-        #self.field = field
-    #@method
-    def __call__(self, guess: Guess, gold: Gold) -> Tensor:
-        return torch.tensor(0.0)
+    def __call__(self, guess, gold):
+        return torch.tensor(0.0, device=guess.device)
     
     
-#CategoricalLoss = torch.nn.NLLLoss
-class CategoricalLoss(PropertyLoss[Tensor, Tensor]):
-    def __init__(self, field: CategoricalProperty, reduction: str="none") -> None:
-        super(CategoricalLoss, self).__init__(field)
+class CategoricalLoss(PropertyLoss):
+    def __init__(self, property, reduction="none"):
+        super(CategoricalLoss, self).__init__(property)
         self.reduction = reduction
-        self.name = field.name
-    def __call__(self, guess: Tensor, gold: Tensor) -> Tensor:
-        #selector = gold != 0 #
-        selector = torch.nonzero(gold).flatten().to(device=guess.device) #~torch.isnan(gold).to(device=guess.device)
+    def __call__(self, guess, gold):
+        selector = torch.nonzero(gold).flatten().to(device=guess.device)
         guess = torch.index_select(guess, 0, selector)
         gold = torch.index_select(gold, 0, selector)
         retval = torch.nn.functional.cross_entropy(guess, gold, reduction=self.reduction)
         return retval
+    def normalize(self, v):
+        return int(numpy.array(v).argmax(0).tolist())
 
 
-
-# (batch_count :: Float) -> (batch_count :: Float)
-
-
-# (batch_count x entity_representation_size :: Float) -> (batch_count :: Float)    
-
-
-class NumericLoss(PropertyLoss[Tensor, Tensor]):
-    def __init__(self, field: NumericProperty, reduction: str="mean", **args) -> None:
-        #self.dims = args["dims"]
-        super(NumericLoss, self).__init__(field)
+class NumericLoss(PropertyLoss):
+    def __init__(self, property, reduction="mean", **args):
+        super(NumericLoss, self).__init__(property)
         self.reduction = reduction
-    def __call__(self, guess: Tensor, gold: Tensor) -> Tensor:
-        guess = guess.flatten()
-        gold = gold.flatten()
-        selector = ~torch.isnan(gold) #.to(device=guess.device)
-        retval = torch.nn.functional.mse_loss(torch.masked_select(guess, selector), torch.masked_select(gold, selector), reduction=self.reduction)
+    def __call__(self, guess, gold):
+        guess_ = guess.flatten()
+        gold_ = gold.flatten()
+        #selector = ~torch.isnan(gold)
+        #guess_ = torch.masked_select(guess, selector)
+        #gold_ = torch.masked_select(gold, selector)
+        retval = torch.nn.functional.mse_loss(guess_, gold_, reduction=self.reduction)
         return retval
 
-class DistributionLoss(PropertyLoss[Tensor, Tensor]):
-    def __init__(self, field: DistributionProperty, reduction: str="mean", **args) -> None:
-        #self.dims = args["dims"]
+
+class DistributionLoss(PropertyLoss):
+    def __init__(self, field, reduction="mean", **args):
         super(DistributionLoss, self).__init__(field)
         self.reduction = reduction
-    def __call__(self, guess: Tensor, gold: Tensor) -> Tensor:
-        #print(guess)
-        #print(gold)
-        #sys.exit()
+    def __call__(self, guess, gold):
         guess = guess.flatten()
         gold = gold.flatten()
-        selector = ~torch.isnan(gold) #.to(device=guess.device)
-        #return torch.Tensor([0.0])
-        #print(selector)
-        #sys.exit()
-        retval = torch.nn.functional.kl_div(torch.masked_select(guess, selector), torch.masked_select(gold, selector), reduction=self.reduction, log_target=True)
-        #retval = torch.nn.functional.mse_loss(torch.masked_select(guess, selector), torch.masked_select(gold, selector), reduction=self.reduction)
+        selector = ~torch.isnan(gold)
+        retval = torch.nn.functional.kl_div(
+            torch.masked_select(guess, selector), 
+            torch.masked_select(gold, selector), 
+            reduction=self.reduction, 
+            log_target=True
+        )
         return retval
 
 class ScalarLoss(NumericLoss):
-    def __init__(self, field: NumericProperty, reduction: str="none", **args) -> None:
+    def __init__(self, field, reduction="none", **args):
         super(ScalarLoss, self).__init__(field, reduction, dims=1, **args)
-
-class SScalarLoss(PropertyLoss[Tensor, Tensor]):
-    def __init__(self, field: NumericProperty, reduction: str="none") -> None:
-        super(ScalarLoss, self).__init__(field)
-        self.reduction = reduction
-    def __call__(self, guess: Tensor, gold: Tensor) -> Tensor:
-        guess = guess.flatten()
-        gold = gold.flatten()
-        selector = ~torch.isnan(gold) #.to(device=guess.device)
-        retval = torch.nn.functional.mse_loss(torch.masked_select(guess, selector), torch.masked_select(gold, selector), reduction=self.reduction)
-        return retval
-
-
-
-# (batch_count :: Float) -> (batch_count :: Float)
-
-
-# (batch_count x entity_representation_size :: Float) -> (batch_count :: Float)    
-
-#class DistributionLoss(PropertyLoss):
-#    def __init__(self, field: DataProperty) -> None:
-#        super(DistributionLoss, self).__init__(field)
-#    def compute(self, guess: Tensor, gold: Tensor) -> Tensor:
-#        return torch.nn.functional.kl_div(guess, gold)
-
+    def normalize(self, v):
+        return v.item()
 
 
 class AudioLoss(PropertyLoss):
-    def __init__(self, field: DataProperty, reduction: str="none") -> None:
+    def __init__(self, field, reduction="none"):
         super(AudioLoss, self).__init__(field)
         self.reduction = reduction
-    def __call__(self, guess: Tensor, gold: Tensor) -> Tensor:
+    def __call__(self, guess, gold):
         guess = guess.flatten()
         gold = gold.flatten()
         selector = ~torch.isnan(gold)
-        retval = torch.nn.functional.mse_loss(torch.masked_select(guess, selector), torch.masked_select(gold, selector), reduction=self.reduction)
+        retval = torch.nn.functional.mse_loss(
+            torch.masked_select(guess, selector), 
+            torch.masked_select(gold, selector), 
+            reduction=self.reduction
+        )
         return retval
-
-
-
 
 
 class VideoLoss(PropertyLoss):
-    def __init__(self, field: DataProperty, reduction: str="none") -> None:
+    def __init__(self, field, reduction="none"):
         super(VideoLoss, self).__init__(field)
         self.reduction = reduction
-    def __call__(self, guess: Tensor, gold: Tensor) -> Tensor:
+    def __call__(self, guess, gold):
         guess = guess.flatten()
         gold = gold.flatten()
         selector = ~torch.isnan(gold)
-        retval = torch.nn.functional.mse_loss(torch.masked_select(guess, selector), torch.masked_select(gold, selector), reduction=self.reduction)
+        retval = torch.nn.functional.mse_loss(
+            torch.masked_select(guess, selector),
+            torch.masked_select(gold, selector),
+            reduction=self.reduction
+        )
         return retval
 
 
-
-
 class ImageLoss(PropertyLoss):
-    def __init__(self, field: DataProperty, reduction: str="mean") -> None:
+    def __init__(self, field, reduction="mean"):
         super(ImageLoss, self).__init__(field)
         self.reduction = reduction
-    def __call__(self, guess: Tensor, gold: Tensor) -> Tensor:
-        #print(guess.shape)
-        #print(gold.shape)
+    def __call__(self, guess, gold):
         guess = guess.flatten()
         gold = gold.flatten()        
         selector = ~torch.isnan(gold)
         guess = torch.masked_select(guess, selector)
         gold = torch.masked_select(gold, selector)
-        #print(guess)
-        #print(torch.isnan(gold).sum())
-        #print(torch.isnan(guess).sum())
-        #sys.exit()
-        retval = torch.nn.functional.mse_loss(guess, gold, reduction=self.reduction)
+        retval = torch.nn.functional.mse_loss(
+            guess, 
+            gold, 
+            reduction=self.reduction
+        )
         return retval
     
 
-# item_sequences -> lengths -> hidden_state
-# (batch_count x max_length :: Int) -> (batch_count :: Int) -> (batch_count x entity_representation_size :: Float)
-
-
-# representations -> item_distributions
-# (batch_count x entity_representation_size :: Float) -> (batch_count x max_length x item_types :: Float)
-
-
-class SequenceLoss(PropertyLoss[Tensor, Tensor]):
-    def __init__(self, field: SequenceProperty, reduction: str="none") -> None:
-        super(SequenceLoss, self).__init__(field)
+class SequenceLoss(PropertyLoss):
+    def __init__(self, property, reduction="none"):
+        super(SequenceLoss, self).__init__(property)
         self.reduction = reduction
-    def __call__(self, x: Tensor, target: Tensor) -> Tensor:
+    def __call__(self, x, target):
         min_len = min(x.shape[1], target.shape[1])
         if target.shape[1] == 0:
             target = torch.zeros(size=x.shape[:-1], device=x.device, dtype=torch.long)
@@ -191,3 +144,5 @@ class SequenceLoss(PropertyLoss[Tensor, Tensor]):
         x = x[mask]
         target = target[mask]
         return torch.nn.functional.nll_loss(x, target, reduction=self.reduction)
+    def normalize(self, v):
+        return [int(x) for x in numpy.array(v).argmax(1).tolist()]

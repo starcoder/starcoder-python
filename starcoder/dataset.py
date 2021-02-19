@@ -46,6 +46,7 @@ class Dataset(torch.utils.data.Dataset):
             for relationship in [r for r, s in 
                                  self.schema["relationships"].items() 
                                  if s["source_entity_type"] == entity_type]:
+                self.edges[relationship] = self.edges.get(relationship, {})
                 target_ids = entity.get(relationship, [])
                 for target in target_ids if isinstance(target_ids, list) else [target_ids]:
                     if target not in self.id_to_index:
@@ -57,10 +58,9 @@ class Dataset(torch.utils.data.Dataset):
                                     relationship
                                 )
                             )
-                        else:
-                            continue
+                        continue
                     target_index = self.id_to_index[target]
-                    self.edges[relationship] = self.edges.get(relationship, {})
+                    
                     self.edges[relationship][source_index] = self.edges[relationship].get(source_index, [])
                     self.edges[relationship][source_index].append(target_index)
         self.update_components()

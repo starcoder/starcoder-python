@@ -5,6 +5,7 @@ from starcoder.activation import Activation
 from torch import Tensor
 from torch.nn import Module
 from abc import ABCMeta, abstractproperty, abstractmethod
+import torch.autograd.profiler as profiler
 
 logger = logging.getLogger(__name__)
 
@@ -17,12 +18,18 @@ class Autoencoder(StarcoderObject, Module, metaclass=ABCMeta):
         self.input_size = input_size
         self.output_size = output_size
         self.bottleneck_size = bottleneck_size
+    def forward(self, x):
+        with profiler.record_function("AUTOENCODER {}".format(self.depth)):
+            return self._forward(x)
+
+    @abstractmethod
+    def _forward(self, x): pass
 
 
 class NullAutoencoder(Autoencoder):
     def __init__(self, entity_type_name, depth):
         super(NullAutoencoder, self).__init__(entity_type_name, depth, 0, 0, 0)
-    def forward(self, x):
+    def _forward(self, x):
         logger.debug(
             "Running depth-%d NullAutoencoder for '%s' entities", 
             self.depth, 
@@ -48,7 +55,7 @@ class IdentityAutoencoder(Autoencoder):
             bottleneck_size,
             0 if input_size == 0 else layer_sizes[0]
         )
-    def forward(self, x):
+    def _forward(self, x):
         return (x, x)
 
 
@@ -74,7 +81,7 @@ class BasicAutoencoder(Autoencoder):
             self.encoding_layers = torch.nn.ModuleList(encoding_layers)
             self.decoding_layers = torch.nn.ModuleList(reversed(decoding_layers))
         self.activation = activation
-    def forward(self, x):
+    def _forward(self, x):
         if self.encoding_layers == []:
             return (x, x)
         for layer in self.encoding_layers:

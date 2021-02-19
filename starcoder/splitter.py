@@ -164,7 +164,6 @@ if __name__ == "__main__":
         len(data),
         data.num_components
     )
-
     
     sampler = starport(schema["meta"]["splitter"])(schema)
     for fname, split in zip(args.outputs, sampler(schema, data)):

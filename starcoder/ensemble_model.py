@@ -5,16 +5,25 @@ from torch.utils.data import DataLoader, Dataset
 from torch.nn import Dropout
 import logging
 from torch.optim import Adam, SGD
+from abc import ABCMeta, abstractproperty, abstractmethod
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from starcoder.base import StarcoderObject
 from starcoder.utils import starport
+import torch.autograd.profiler as profiler
 
 logger = logging.getLogger(__name__)
 
 
-class Ensemble(StarcoderObject, torch.nn.Module):
+class Ensemble(StarcoderObject, torch.nn.Module, metaclass=ABCMeta):
     def __init__(self) -> None:
         super(Ensemble, self).__init__()
+
+    def forward(self, entities, adjacencies):
+        with profiler.record_function("AUTOENCODER"):
+            return self._forward(entities, adjacencies)
+
+    @abstractmethod
+    def _forward(self, x): pass
 
 
 class GraphAutoencoder(Ensemble):
@@ -43,7 +52,8 @@ class GraphAutoencoder(Ensemble):
         for property_name, property_spec in self.schema["properties"].items():
             property_encoder_class = starport(property_spec["meta"]["encoder"])
             property_encoders[property_name] = property_encoder_class(
-                self.property_objects[property_name]
+                self.property_objects[property_name],
+                **property_spec.get("meta", {})
             )
         self.property_encoders = torch.nn.ModuleDict(property_encoders)
         # The size of an encoded entity is the sum of the base representation size, the encoded
@@ -109,7 +119,7 @@ class GraphAutoencoder(Ensemble):
             {k : torch.nn.ModuleList(v) for k, v in self.entity_autoencoders.items()}
         )
         self.entity_normalizers = torch.nn.ModuleDict(
-            {k : starport(self.schema["entity_types"][k]["meta"]["normalizer"])(v[0].input_size) for k, v in self.entity_autoencoders.items()}
+            {k : starport(self.schema["entity_types"][k]["meta"]["normalizer"])(k, v[0].input_size) for k, v in self.entity_autoencoders.items()}
         )
         # A summarizer for each relationship particant (source or target), at each
         # depth less than the max, to reduce one-to-many relationships to a fixed size.
@@ -125,11 +135,15 @@ class GraphAutoencoder(Ensemble):
                 tbs = self.entity_autoencoders[tt][d].bottleneck_size
                 relationship_source_summarizers[rel_name].append(
                     starport(rel["meta"]["source_summarizer"] if sbs > 0 else "starcoder.summarizer.NullSummarizer")(
+                        rel_name, 
+                        "source",
                         sbs
                     )
                 )
                 relationship_target_summarizers[rel_name].append(
                     starport(rel["meta"]["target_summarizer"] if tbs > 0 else "starcoder.summarizer.NullSummarizer")(
+                        rel_name, 
+                        "target",
                         tbs
                     )
                 )
@@ -161,7 +175,7 @@ class GraphAutoencoder(Ensemble):
             boundary_size = 0
             for ae in self.entity_autoencoders[entity_type_name]:
                 boundary_size += ae.output_size
-            projectors[entity_type_name] = projector_class(boundary_size, self.projected_size, activation) if boundary_size not in [0, self.projected_size] else torch.nn.Identity()
+            projectors[entity_type_name] = projector_class(entity_type_name, boundary_size, self.projected_size, activation) if boundary_size not in [0, self.projected_size] else torch.nn.Identity()
         self.projectors = torch.nn.ModuleDict(projectors)
         # A decoder for each property that takes a projected representation 
         # and generates a value of the property's data type
@@ -308,12 +322,12 @@ class GraphAutoencoder(Ensemble):
                     bottlenecks[entity_type_name] = bns
         return (bottlenecks, autoencoder_outputs)
 
+    # performance: vectorize these loops!
     def create_structured_autoencoder_inputs(self,
                                              depth,
                                              prev_outputs,
                                              prev_bottlenecks,
                                              adjacencies):
-        rev_adjacencies = {k : v.T for k, v in adjacencies.items()}
         autoencoder_inputs = {}
         for entity_type_name, prev_output in prev_outputs.items():
             entity_type = self.schema["entity_types"][entity_type_name]
@@ -324,26 +338,30 @@ class GraphAutoencoder(Ensemble):
                 if source == entity_type_name:
                     summarizer = self.relationship_target_summarizers[rel_name][depth - 1]
                     other = target
-                    val = torch.zeros(size=(prev_output.shape[0], summarizer.output_size), device=self.device)
-                    if rel_name in adjacencies:
-                        adj = adjacencies[rel_name]
-                        for i in range(prev_output.shape[0]):
-                            if adj[i].sum() > 0:
-                                val[i, :] = summarizer(prev_bottlenecks[other][adj[i]])
-                    autoencoder_inputs[entity_type_name].append(val)
+                    rel_count = torch.cat([adjacencies[rel_name].sum(1), torch.tensor([0], dtype=adjacencies[rel_name].dtype, device=self.device)])
+                    max_rel_count = rel_count.max()
+                    cur_ent_count = adjacencies[rel_name].shape[0]
+                    related = torch.zeros(size=(cur_ent_count,
+                                                max_rel_count + 1, # extra to avoid nan
+                                                summarizer.input_size
+                                                ), device=self.device)
+                    for i in range(adjacencies[rel_name].shape[0]):
+                        related[i, :rel_count[i]] = prev_bottlenecks[other][adjacencies[rel_name][i, :]]
+                    autoencoder_inputs[entity_type_name].append(summarizer(related))
                 if rel_spec["target_entity_type"] == entity_type_name:
                     summarizer = self.relationship_source_summarizers[rel_name][depth - 1]
                     other = source
-                    val = torch.zeros(size=(prev_output.shape[0], summarizer.output_size), device=self.device)
-                    if rel_name in adjacencies:
-                        adj = adjacencies[rel_name].T
-                        for i in range(prev_output.shape[0]):
-                            if adj[i].sum() > 0:
-                                val[i, :] = summarizer(prev_bottlenecks[other][adj[i]])
-                    autoencoder_inputs[entity_type_name].append(val)
+                    rel_count = torch.cat([adjacencies[rel_name].sum(0), torch.tensor([0], dtype=adjacencies[rel_name].dtype, device=self.device)])
+                    max_rel_count = rel_count.max()
+                    cur_ent_count = adjacencies[rel_name].shape[1]
+                    related = torch.zeros(size=(cur_ent_count,
+                                                max_rel_count + 1, # extra to avoid nan
+                                                summarizer.input_size
+                                                ), device=self.device)
+                    for i in range(adjacencies[rel_name].shape[1]):
+                        related[i, :rel_count[i]] = prev_bottlenecks[other][adjacencies[rel_name][:,i]]
+                    autoencoder_inputs[entity_type_name].append(summarizer(related))
         autoencoder_inputs = {k : torch.cat(v, 1) for k, v in autoencoder_inputs.items()}
-        for k, v in autoencoder_inputs.items():
-            assert v.isnan().sum() == 0
         return autoencoder_inputs
                     
     def project_autoencoder_outputs(self, autoencoder_outputs):
@@ -423,7 +441,7 @@ class GraphAutoencoder(Ensemble):
             ].to(self.device)
         return retval
 
-    def forward(self, entities, adjacencies):
+    def _forward(self, entities, adjacencies):
         num_entities = len(entities)
         logger.debug("Starting forward pass with %d entities", num_entities)
         entity_type_to_batch_indices, entity_type_to_property_indices, packed_properties = self.pack_properties(
@@ -431,6 +449,10 @@ class GraphAutoencoder(Ensemble):
         )
         adjacencies = self.prepare_adjacencies(adjacencies, entity_type_to_batch_indices)
         encoded_properties = self.encode_properties(packed_properties)
+        vv = sum([v.sum() for v in encoded_properties.values()])
+        #print(vv)
+
+        #print({k : v.shape for k, v in encoded_properties.items()})
         all_bottlenecks = {}
         all_ae_outputs = []        
         for depth in range(self.depth + 1):
@@ -452,13 +474,17 @@ class GraphAutoencoder(Ensemble):
                 all_bottlenecks[entity_type_name] = all_bottlenecks.get(entity_type_name, [])
                 all_bottlenecks[entity_type_name].append(b)
             all_ae_outputs.append(encoded_entities)
+
+        #return entities, torch.nn.functional.mse_loss(sum([v.sum() for v in all_ae_outputs[-1].values()]), torch.tensor(1.0, device=self.device)), {}, {}
         encoded_entities = {}
         for entity_type_name in list(all_ae_outputs[0].keys()):
             encoded_entities[entity_type_name] = torch.cat(
                 [out[entity_type_name] for out in all_ae_outputs],
                 1
             )
+
         resized_encoded_entities = self.project_autoencoder_outputs(encoded_entities)
+
         indices, decoded_properties = self.decode_properties(
             resized_encoded_entities,
             entity_type_to_batch_indices,
@@ -473,11 +499,11 @@ class GraphAutoencoder(Ensemble):
         #    adjacencies,
         #    {k : torch.cat(v, 1) for k, v in all_bottlenecks.items()},
         #)
-        reconstructions_by_id = {} if self.training else self.reconstruct_entities(
-            decoded_properties, 
-            entities, 
-            entity_type_to_batch_indices,
-        )
+        reconstructions_by_id = {} if self.training else {} #self.reconstruct_entities(
+        #     decoded_properties, 
+        #     entities, 
+        #     entity_type_to_batch_indices,
+        # )
         bottlenecks_by_id = self.assemble_bottlenecks(
             {k : v[-1] for k, v in all_bottlenecks.items()},
             entities, 
@@ -527,13 +553,14 @@ class GraphAutoencoder(Ensemble):
         losses_by_property = {}
         for property_name, gold_values in packed_entities.items():
             reconstructed_values = decoded_properties[property_name]
-            mask = ~torch.isnan(gold_values)
-            
-            losses_by_property[property_name] = self.property_losses[property_name](
-                reconstructed_values,
-                gold_values
+            losses_by_property[property_name] = torch.nansum(
+                self.property_losses[property_name](
+                    reconstructed_values,
+                    gold_values
+                )
             )
         logger.debug("Finished computing all losses")
+
         return torch.sum(torch.cat([torch.nansum(v).flatten() for k, v in losses_by_property.items()]))
 
     def assemble_bottlenecks(self, bottlenecks, entities, entity_type_to_batch_indices):
@@ -553,7 +580,8 @@ class GraphAutoencoder(Ensemble):
         if type(m) == torch.nn.Linear or type(m) == torch.nn.Conv1d:
             torch.nn.init.xavier_uniform_(m.weight)
             m.bias.data.fill_(0.01)
-    
+
+    # performance: cuda to cpu conversion
     def reconstruct_entities(self, 
                              decoded_properties, 
                              entities, 

@@ -28,55 +28,87 @@ from typing import Type, List, Dict, Set, Any, Callable, Tuple, Union
 from starcoder.base import StarcoderObject
 from abc import ABCMeta, abstractproperty, abstractmethod
 from starcoder.activation import Activation
+import torch.autograd.profiler as profiler
 
 logger = logging.getLogger(__name__)
 
 
 class Summarizer(torch.nn.Module, metaclass=ABCMeta):
-    def __init__(self):
+    def __init__(self, rel_name, position):
         super(Summarizer, self).__init__()
+        self.rel_name = rel_name
+        self.position = position
+    def forward(self, x):
+        with profiler.record_function("SUMMARIZER {} {}".format(self.rel_name, self.position)):
+            return self._forward(x)
+        
     @abstractmethod
-    def forward(self, representations): pass
+    def _forward(self, representations): pass
 
 
 class NullSummarizer(Summarizer):
-    def __init__(self, input_size):
-        super(NullSummarizer, self).__init__()
-    def forward(self, representations):
-        return torch.zeros(size=(representations.shape[1],), device=representations.device)
+    def __init__(self, rel_name, position, input_size):
+        super(NullSummarizer, self).__init__(rel_name, position)
+    def _forward(self, representations):
+        return torch.zeros(size=(representations.shape[0], 0), device=representations.device)
+    @property
+    def input_size(self):
+        return 0
     @property
     def output_size(self):
         return 0
 
 class RNNSummarizer(Summarizer):
-    def __init__(self, input_size, rnn_type=torch.nn.GRU):
-        super(RNNSummarizer, self).__init__()
+    def __init__(self, rel_name, position, input_size, rnn_type=torch.nn.GRU):
+        super(RNNSummarizer, self).__init__(rel_name, position)
         self.layer = rnn_type(input_size, input_size, batch_first=True)
-    def forward(self, representations):
+    def _forward(self, representations):
         out, h = self.layer(representations.unsqueeze(0))
         return h.squeeze()
 
 
 class MaxPoolSummarizer(Summarizer):
-    def __init__(self, input_size):
-        super(MaxPoolSummarizer, self).__init__()
+    def __init__(self, rel_name, position, input_size):
+        super(MaxPoolSummarizer, self).__init__(rel_name, position)
         self.layer = torch.nn.MaxPool1d(1)
-    def forward(self, representations):
+    def _forward(self, representations):
         return self.layer(representations)
 
 
+# class DANSummarizer(Summarizer):
+#     def __init__(self, rel_name, position, input_size):
+#         super(DANSummarizer, self).__init__(rel_name, position)
+#         self.layers = []
+#         self.sizes = [input_size]
+#         for i in range(len(self.sizes) - 1):
+#             self.layers.append(torch.nn.Linear(self.sizes[i], self.sizes[i + 1]))
+#         self.layers = torch.nn.ModuleList(self.layers)
+#         self.activation = torch.nn.functional.relu
+#         self._input_size = input_size
+#     def _forward(self, representations):
+#         x = torch.mean(representations, 0)
+#         for layer in self.layers:
+#             x = self.activation(layer(x))
+#         return x
+#     @property
+#     def input_size(self):
+#         return self._input_size
+#     @property
+#     def output_size(self):
+#         return self._input_size
+
 class DANSummarizer(Summarizer):
-    def __init__(self, input_size):
-        super(DANSummarizer, self).__init__()
+    def __init__(self, rel_name, position, input_size):
+        super(DANSummarizer, self).__init__(rel_name, position)
         self.layers = []
-        self.sizes = [input_size, input_size, input_size]
+        self.sizes = [input_size]
         for i in range(len(self.sizes) - 1):
             self.layers.append(torch.nn.Linear(self.sizes[i], self.sizes[i + 1]))
         self.layers = torch.nn.ModuleList(self.layers)
         self.activation = torch.nn.functional.relu
         self._input_size = input_size
-    def forward(self, representations):
-        x = torch.mean(representations, 0)
+    def _forward(self, representations):
+        x = torch.mean(representations, 1)
         for layer in self.layers:
             x = self.activation(layer(x))
         return x
@@ -89,11 +121,11 @@ class DANSummarizer(Summarizer):
     
     
 class SingleSummarizer(Summarizer):
-    def __init__(self, input_size):
-        super(SingleSummarizer, self).__init__()
+    def __init__(self, rel_name, position, input_size):
+        super(SingleSummarizer, self).__init__(rel_name, position)
         self._input_size = input_size
-    def forward(self, representations):
-        return representations[0]
+    def _forward(self, representations):
+        return representations[:, 0, :]
     @property
     def input_size(self):
         return self._input_size

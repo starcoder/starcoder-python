@@ -287,9 +287,8 @@ class ImageProperty(DataProperty):
 class AudioProperty(DataProperty):
     packed_type = torch.float32
     def __init__(self, name, spec, data, **args):
-        self.channels = channels
-        self.channel_size = channel_size
-        super(AudioProperty, self).__init__(name, **args)
+        self.channels = spec["meta"]["channels"]
+        super(AudioProperty, self).__init__(name, spec, **args)
     def pack(self, v):
         return numpy.random.random((1000, self.channels)).tolist()
     def unpack(self, v):
@@ -310,11 +309,10 @@ class AudioProperty(DataProperty):
 class VideoProperty(DataProperty):
     packed_type = torch.float32        
     def __init__(self, name, spec, data, **args):
-        self.width = width
-        self.height = height
-        self.channels = channels
-        self.channel_size = channel_size
-        super(VideoProperty, self).__init__(name, **args)
+        self.width = spec["meta"]["width"]
+        self.height = spec["meta"]["height"]
+        self.channels = spec["meta"]["channels"]
+        super(VideoProperty, self).__init__(name, spec, **args)
     def pack(self, v):
         return numpy.random.random((1, self.width, self.height, self.channels)).tolist()
     def unpack(self, v):

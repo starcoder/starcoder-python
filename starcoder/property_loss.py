@@ -6,6 +6,7 @@ from abc import ABCMeta, abstractmethod, abstractproperty
 from torch import Tensor
 import torchvision
 import numpy
+import torch.autograd.profiler as profiler
 
 logger = logging.getLogger(__name__)
 
@@ -14,30 +15,42 @@ class PropertyLoss(StarcoderObject, torch.nn.Module, metaclass=ABCMeta):
     def __init__(self, property):
         super(PropertyLoss, self).__init__()
         self.property = property
+
+    def __call__(self, guess, gold):
+        with profiler.record_function("LOSS {}".format(self.property.name)):
+            return self._call(guess, gold)
+
     @abstractmethod
-    def __call__(self, guess, gold): pass
-    def normalize(self, v):
+    def _call(self, guess, gold): pass
+
+    def _normalize(self, v):
         return v
+        
+    def normalize(self, v):
+        with profiler.record_function("NORMALIZE {}".format(self.property.name)):
+            return self._normalize(v)
 
 
 class NullLoss(PropertyLoss):
     def __init__(self, property):
         super(NullLoss, self).__init__(property)
-    def __call__(self, guess, gold):
+    def _call(self, guess, gold):
         return torch.tensor(0.0, device=guess.device)
-    
     
 class CategoricalLoss(PropertyLoss):
     def __init__(self, property, reduction="none"):
         super(CategoricalLoss, self).__init__(property)
         self.reduction = reduction
-    def __call__(self, guess, gold):
-        selector = torch.nonzero(gold).flatten().to(device=guess.device)
+    def _call(self, guess, gold):
+        #print(gold.shape, guess.shape)
+        selector = torch.nonzero(gold).flatten()
+        #selector = (gold != 0).flatten().to(device=guess.device) & (~torch.isnan(guess[:, 0]))
         guess = torch.index_select(guess, 0, selector)
         gold = torch.index_select(gold, 0, selector)
+        #print(guess.shape, gold.shape)
         retval = torch.nn.functional.cross_entropy(guess, gold, reduction=self.reduction)
         return retval
-    def normalize(self, v):
+    def _normalize(self, v):
         return int(numpy.array(v).argmax(0).tolist())
 
 
@@ -45,21 +58,22 @@ class NumericLoss(PropertyLoss):
     def __init__(self, property, reduction="mean", **args):
         super(NumericLoss, self).__init__(property)
         self.reduction = reduction
-    def __call__(self, guess, gold):
+    def _call(self, guess, gold):
         guess_ = guess.flatten()
         gold_ = gold.flatten()
-        #selector = ~torch.isnan(gold)
-        #guess_ = torch.masked_select(guess, selector)
-        #gold_ = torch.masked_select(gold, selector)
+        #print(guess_.shape, gold_.shape, self.property)
+        selector = ~torch.isnan(guess_)
+        guess_ = torch.masked_select(guess_, selector)
+        gold_ = torch.masked_select(gold_, selector)
+        #print(guess_, gold_, self.property)
         retval = torch.nn.functional.mse_loss(guess_, gold_, reduction=self.reduction)
         return retval
 
-
 class DistributionLoss(PropertyLoss):
-    def __init__(self, field, reduction="mean", **args):
-        super(DistributionLoss, self).__init__(field)
+    def __init__(self, property, reduction="mean", **args):
+        super(DistributionLoss, self).__init__(property)
         self.reduction = reduction
-    def __call__(self, guess, gold):
+    def _call(self, guess, gold):
         guess = guess.flatten()
         gold = gold.flatten()
         selector = ~torch.isnan(gold)
@@ -72,17 +86,17 @@ class DistributionLoss(PropertyLoss):
         return retval
 
 class ScalarLoss(NumericLoss):
-    def __init__(self, field, reduction="none", **args):
-        super(ScalarLoss, self).__init__(field, reduction, dims=1, **args)
-    def normalize(self, v):
+    def __init__(self, property, reduction="none", **args):
+        super(ScalarLoss, self).__init__(property, reduction, dims=1, **args)
+    def _normalize(self, v):
         return v.item()
 
 
 class AudioLoss(PropertyLoss):
-    def __init__(self, field, reduction="none"):
-        super(AudioLoss, self).__init__(field)
+    def __init__(self, property, reduction="none"):
+        super(AudioLoss, self).__init__(property)
         self.reduction = reduction
-    def __call__(self, guess, gold):
+    def _call(self, guess, gold):
         guess = guess.flatten()
         gold = gold.flatten()
         selector = ~torch.isnan(gold)
@@ -95,10 +109,10 @@ class AudioLoss(PropertyLoss):
 
 
 class VideoLoss(PropertyLoss):
-    def __init__(self, field, reduction="none"):
-        super(VideoLoss, self).__init__(field)
+    def __init__(self, property, reduction="none"):
+        super(VideoLoss, self).__init__(property)
         self.reduction = reduction
-    def __call__(self, guess, gold):
+    def _call(self, guess, gold):
         guess = guess.flatten()
         gold = gold.flatten()
         selector = ~torch.isnan(gold)
@@ -111,10 +125,10 @@ class VideoLoss(PropertyLoss):
 
 
 class ImageLoss(PropertyLoss):
-    def __init__(self, field, reduction="mean"):
-        super(ImageLoss, self).__init__(field)
+    def __init__(self, property, reduction="mean"):
+        super(ImageLoss, self).__init__(property)
         self.reduction = reduction
-    def __call__(self, guess, gold):
+    def _call(self, guess, gold):
         guess = guess.flatten()
         gold = gold.flatten()        
         selector = ~torch.isnan(gold)
@@ -132,7 +146,7 @@ class SequenceLoss(PropertyLoss):
     def __init__(self, property, reduction="none"):
         super(SequenceLoss, self).__init__(property)
         self.reduction = reduction
-    def __call__(self, x, target):
+    def _call(self, x, target):
         min_len = min(x.shape[1], target.shape[1])
         if target.shape[1] == 0:
             target = torch.zeros(size=x.shape[:-1], device=x.device, dtype=torch.long)
@@ -143,6 +157,6 @@ class SequenceLoss(PropertyLoss):
         mask = target != 0
         x = x[mask]
         target = target[mask]
-        return torch.nn.functional.nll_loss(x, target, reduction=self.reduction)
-    def normalize(self, v):
+        return torch.nn.functional.cross_entropy(x, target, reduction=self.reduction)
+    def _normalize(self, v):
         return [int(x) for x in numpy.array(v).argmax(1).tolist()]

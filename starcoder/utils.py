@@ -129,7 +129,7 @@ def run_epoch(model,
               mask_properties=[],
               subselect=False):
     model.train(True)
-    logger.info("Running over training data")
+    logger.info("Running over training data with batch size %d", batch_size)
     train_loss, _, _ = run_over_components(
         model,
         batchifier,
@@ -143,7 +143,7 @@ def run_epoch(model,
         train=True,
         mask_properties=mask_properties,
     )
-    logger.info("Running over dev data")
+    logger.info("Running over dev data with batch size %d", batch_size)
     model.train(False)
     dev_loss, _, _ = run_over_components(
         model,

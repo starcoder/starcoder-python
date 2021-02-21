@@ -1,12 +1,8 @@
-import importlib
 import torch
 import numpy
 from torch.utils.data import DataLoader, Dataset
-from torch.nn import Dropout
 import logging
-from torch.optim import Adam, SGD
 from abc import ABCMeta, abstractproperty, abstractmethod
-from torch.optim.lr_scheduler import ReduceLROnPlateau
 from starcoder.base import StarcoderObject
 from starcoder.utils import starport
 import torch.autograd.profiler as profiler
@@ -15,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 class Ensemble(StarcoderObject, torch.nn.Module, metaclass=ABCMeta):
+
     def __init__(self) -> None:
         super(Ensemble, self).__init__()
 
@@ -27,6 +24,7 @@ class Ensemble(StarcoderObject, torch.nn.Module, metaclass=ABCMeta):
 
 
 class GraphAutoencoder(Ensemble):
+    
     def __init__(self,
                  schema,
                  data,
@@ -206,7 +204,6 @@ class GraphAutoencoder(Ensemble):
     def parameter_count(self) -> int:
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
-
     def pack_properties(self, entities):        
         entity_type_to_batch_indices = {et : [] for et in self.schema["entity_types"].keys()}
         entity_type_to_property_indices = {et : {p : [] for p in self.schema["properties"].keys()} for et in self.schema["entity_types"].keys()}
@@ -322,7 +319,6 @@ class GraphAutoencoder(Ensemble):
                     bottlenecks[entity_type_name] = bns
         return (bottlenecks, autoencoder_outputs)
 
-    # performance: vectorize these loops!
     def create_structured_autoencoder_inputs(self,
                                              depth,
                                              prev_outputs,
@@ -388,7 +384,6 @@ class GraphAutoencoder(Ensemble):
                 reconstructions[property_name].append(
                     self.property_decoders[property_name](resized_encoded_entities[entity_type_name])
                 )
-                #print(reconstructions[property_name], property_name)
                 logger.debug("Decoded values for property '%s' of entity type '%s' into shape %s",
                              property_name,
                              entity_type_name,
@@ -450,9 +445,6 @@ class GraphAutoencoder(Ensemble):
         adjacencies = self.prepare_adjacencies(adjacencies, entity_type_to_batch_indices)
         encoded_properties = self.encode_properties(packed_properties)
         vv = sum([v.sum() for v in encoded_properties.values()])
-        #print(vv)
-
-        #print({k : v.shape for k, v in encoded_properties.items()})
         all_bottlenecks = {}
         all_ae_outputs = []        
         for depth in range(self.depth + 1):
@@ -474,17 +466,13 @@ class GraphAutoencoder(Ensemble):
                 all_bottlenecks[entity_type_name] = all_bottlenecks.get(entity_type_name, [])
                 all_bottlenecks[entity_type_name].append(b)
             all_ae_outputs.append(encoded_entities)
-
-        #return entities, torch.nn.functional.mse_loss(sum([v.sum() for v in all_ae_outputs[-1].values()]), torch.tensor(1.0, device=self.device)), {}, {}
         encoded_entities = {}
         for entity_type_name in list(all_ae_outputs[0].keys()):
             encoded_entities[entity_type_name] = torch.cat(
                 [out[entity_type_name] for out in all_ae_outputs],
                 1
             )
-
         resized_encoded_entities = self.project_autoencoder_outputs(encoded_entities)
-
         indices, decoded_properties = self.decode_properties(
             resized_encoded_entities,
             entity_type_to_batch_indices,
@@ -499,11 +487,11 @@ class GraphAutoencoder(Ensemble):
         #    adjacencies,
         #    {k : torch.cat(v, 1) for k, v in all_bottlenecks.items()},
         #)
-        reconstructions_by_id = {} if self.training else {} #self.reconstruct_entities(
-        #     decoded_properties, 
-        #     entities, 
-        #     entity_type_to_batch_indices,
-        # )
+        reconstructions_by_id = {} if self.training else self.reconstruct_entities(
+            decoded_properties, 
+            entities, 
+            entity_type_to_batch_indices,
+        )
         bottlenecks_by_id = self.assemble_bottlenecks(
             {k : v[-1] for k, v in all_bottlenecks.items()},
             entities, 

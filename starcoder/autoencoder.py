@@ -1,7 +1,6 @@
 import torch
 import logging
 from starcoder.base import StarcoderObject
-from starcoder.activation import Activation
 from torch import Tensor
 from torch.nn import Module
 from abc import ABCMeta, abstractproperty, abstractmethod
@@ -11,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 class Autoencoder(StarcoderObject, Module, metaclass=ABCMeta):
+
     def __init__(self, entity_type_name, depth, input_size, bottleneck_size, output_size):
         super(Autoencoder, self).__init__()
         self.entity_type_name = entity_type_name
@@ -18,6 +18,7 @@ class Autoencoder(StarcoderObject, Module, metaclass=ABCMeta):
         self.input_size = input_size
         self.output_size = output_size
         self.bottleneck_size = bottleneck_size
+
     def forward(self, x):
         with profiler.record_function("AUTOENCODER {}".format(self.depth)):
             return self._forward(x)
@@ -27,8 +28,10 @@ class Autoencoder(StarcoderObject, Module, metaclass=ABCMeta):
 
 
 class NullAutoencoder(Autoencoder):
+
     def __init__(self, entity_type_name, depth):
         super(NullAutoencoder, self).__init__(entity_type_name, depth, 0, 0, 0)
+
     def _forward(self, x):
         logger.debug(
             "Running depth-%d NullAutoencoder for '%s' entities", 
@@ -46,7 +49,9 @@ class NullAutoencoder(Autoencoder):
             )
         )
 
+
 class IdentityAutoencoder(Autoencoder):
+
     def __init__(self, entity_type_name, depth, input_size, bottleneck_size, layer_sizes, activation):
         super(BasicAutoencoder, self).__init__(
             entity_type_name,
@@ -55,11 +60,13 @@ class IdentityAutoencoder(Autoencoder):
             bottleneck_size,
             0 if input_size == 0 else layer_sizes[0]
         )
+
     def _forward(self, x):
         return (x, x)
 
 
 class BasicAutoencoder(Autoencoder):
+    
     def __init__(self, entity_type_name, depth, input_size, bottleneck_size, layer_sizes, activation):
         super(BasicAutoencoder, self).__init__(
             entity_type_name,
@@ -81,6 +88,7 @@ class BasicAutoencoder(Autoencoder):
             self.encoding_layers = torch.nn.ModuleList(encoding_layers)
             self.decoding_layers = torch.nn.ModuleList(reversed(decoding_layers))
         self.activation = activation
+        
     def _forward(self, x):
         if self.encoding_layers == []:
             return (x, x)
@@ -89,5 +97,4 @@ class BasicAutoencoder(Autoencoder):
         bottleneck = x.clone().detach()
         for layer in self.decoding_layers:
             x = self.activation(layer(x))
-        #output = self.dropout(x)
         return (x, bottleneck)

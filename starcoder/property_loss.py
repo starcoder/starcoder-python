@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class PropertyLoss(StarcoderObject, torch.nn.Module, metaclass=ABCMeta):
+
     def __init__(self, property):
         super(PropertyLoss, self).__init__()
         self.property = property
@@ -32,42 +33,46 @@ class PropertyLoss(StarcoderObject, torch.nn.Module, metaclass=ABCMeta):
 
 
 class NullLoss(PropertyLoss):
+
     def __init__(self, property):
         super(NullLoss, self).__init__(property)
+
     def _call(self, guess, gold):
         return torch.tensor(0.0, device=guess.device)
-    
+
+
 class CategoricalLoss(PropertyLoss):
+
     def __init__(self, property, reduction="none"):
         super(CategoricalLoss, self).__init__(property)
         self.reduction = reduction
+
     def _call(self, guess, gold):
-        #print(gold.shape, guess.shape)
         selector = torch.nonzero(gold).flatten()
-        #selector = (gold != 0).flatten().to(device=guess.device) & (~torch.isnan(guess[:, 0]))
         guess = torch.index_select(guess, 0, selector)
         gold = torch.index_select(gold, 0, selector)
-        #print(guess.shape, gold.shape)
         retval = torch.nn.functional.cross_entropy(guess, gold, reduction=self.reduction)
         return retval
+
     def _normalize(self, v):
         return int(numpy.array(v).argmax(0).tolist())
 
 
 class NumericLoss(PropertyLoss):
+
     def __init__(self, property, reduction="mean", **args):
         super(NumericLoss, self).__init__(property)
         self.reduction = reduction
+
     def _call(self, guess, gold):
         guess_ = guess.flatten()
         gold_ = gold.flatten()
-        #print(guess_.shape, gold_.shape, self.property)
         selector = ~torch.isnan(guess_)
         guess_ = torch.masked_select(guess_, selector)
         gold_ = torch.masked_select(gold_, selector)
-        #print(guess_, gold_, self.property)
         retval = torch.nn.functional.mse_loss(guess_, gold_, reduction=self.reduction)
         return retval
+
 
 class DistributionLoss(PropertyLoss):
     def __init__(self, property, reduction="mean", **args):
@@ -84,6 +89,7 @@ class DistributionLoss(PropertyLoss):
             log_target=True
         )
         return retval
+
 
 class ScalarLoss(NumericLoss):
     def __init__(self, property, reduction="none", **args):

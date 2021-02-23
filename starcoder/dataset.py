@@ -36,7 +36,7 @@ class Dataset(torch.utils.data.Dataset):
                 if k not in known_property_names:
                     raise Exception("Unknown property: '{}'".format(k))
             self.entities.append(entity)
-        self.edges = {}
+        self.edges = {r : {} for r in self.schema["relationships"].keys()}
         for entity in self.entities:
             entity_type = entity[self.schema["entity_type_property"]]
             if entity_type not in self.schema["entity_types"]:
@@ -46,7 +46,6 @@ class Dataset(torch.utils.data.Dataset):
             for relationship in [r for r, s in 
                                  self.schema["relationships"].items() 
                                  if s["source_entity_type"] == entity_type]:
-                self.edges[relationship] = self.edges.get(relationship, {})
                 target_ids = entity.get(relationship, [])
                 for target in target_ids if isinstance(target_ids, list) else [target_ids]:
                     if target not in self.id_to_index:

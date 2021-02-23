@@ -46,7 +46,8 @@ class SampleEntities(Batchifier):
         self.schema = schema
 
     def __call__(self, data, batch_size):
-        entities_to_duplicate = data.get_type_ids(*self.schema["meta"]["shared_entity_types"])
+        shared_entity_types = self.schema["meta"].get("shared_entity_types", [])
+        entities_to_duplicate = data.get_type_ids(*shared_entity_types)
         other_entities = [e for e in data.ids if e not in entities_to_duplicate]
         num_other_entities = batch_size - len(entities_to_duplicate)
         assert num_other_entities > 0
@@ -69,7 +70,7 @@ class SampleComponents(Batchifier):
         self.schema = schema
 
     def __call__(self, data, batch_size):
-        shared_entity_types = self.schema["meta"]["shared_entity_types"]
+        shared_entity_types = self.schema["meta"].get("shared_entity_types", [])
         shared_entities = data.get_type_ids(*shared_entity_types)
         if len(shared_entities) > 0.7 * batch_size:
             random.shuffle(shared_entities)
@@ -86,7 +87,7 @@ class SampleComponents(Batchifier):
             component_ids = without_shared.component_ids(component_indices[0])
             component_indices = component_indices[1:]
             if len(component_ids) > nonshared_entities_per_batch:
-                pass
+                logger.error("Could not process component of size %d", len(component_ids))
             elif len(component_ids) + len(other_ids) > nonshared_entities_per_batch:
                 new_data = data.subselect_entities_by_id(shared_entities + other_ids)
                 comps = [new_data.component(i) for i in range(new_data.num_components)]

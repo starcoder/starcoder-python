@@ -110,7 +110,7 @@ def apply_to_components(model,
     old_mode = model.training
     model.train(False)
     for batch_num, (full_entities, full_adjacencies) in enumerate(batchifier(data, batch_size)):
-        logger.debug("Processing batch #%d", batch_num)
+        logger.info("Processing batch #%d (%s) (%s)", batch_num, len(full_entities), data.num_entities)
         yield model(full_entities, full_adjacencies)
     model.train(old_mode)
 

@@ -168,12 +168,14 @@ class GraphAutoencoder(Ensemble):
         self.projected_size = projected_size if projected_size != None else max(self.boundary_sizes.values()) * (self.depth + 1)
         # actually only need to project entities if/when they share properties...
         projectors = {}
-        projector_class = starport(self.schema["meta"]["projector"])
+
         for entity_type_name in self.schema["entity_types"].keys():
             boundary_size = 0
             for ae in self.entity_autoencoders[entity_type_name]:
                 boundary_size += ae.output_size
-            projectors[entity_type_name] = projector_class(entity_type_name, boundary_size, self.projected_size, activation) if boundary_size not in [0, self.projected_size] else torch.nn.Identity()
+            projector_class = starport("starcoder.projector.NullProjector" if boundary_size == 0 else "starcoder.projector.IndentityProjector" if boundary_size == self.projected_size else self.schema["meta"]["projector"])
+            projectors[entity_type_name] = projector_class(entity_type_name, boundary_size, self.projected_size, activation)
+            #if boundary_size not in [0, self.projected_size] else starcoder.projector.NullProjector(entity_type_name, self.projected_size)
         self.projectors = torch.nn.ModuleDict(projectors)
         # A decoder for each property that takes a projected representation 
         # and generates a value of the property's data type
@@ -362,8 +364,14 @@ class GraphAutoencoder(Ensemble):
                     
     def project_autoencoder_outputs(self, autoencoder_outputs):
         resized_autoencoder_outputs = {}        
-        for entity_type_name, ae_output in autoencoder_outputs.items():
+        for entity_type_name, ae_output in autoencoder_outputs.items():            
             resized_autoencoder_outputs[entity_type_name] = self.projectors[entity_type_name](ae_output)
+            logger.debug(
+                "Projected autoencoder output for '%s' entities from %s to %s",
+                entity_type_name,
+                ae_output.shape,
+                resized_autoencoder_outputs[entity_type_name].shape
+            )
         return resized_autoencoder_outputs
     
     def decode_properties(self, 

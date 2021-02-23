@@ -1,6 +1,7 @@
 import logging
 from jsonpath_ng.ext import parse
 import json
+import os.path
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +36,11 @@ if __name__ == "__main__":
 
     config_rules = []
     for conf_file in args.config_files:
-        with open(conf_file, "rt") as ifd:
-            config_rules += json.loads(ifd.read())
+        if os.path.exists(conf_file):
+            with open(conf_file, "rt") as ifd:
+                config_rules += json.loads(ifd.read())
+        else:
+            config_rules += eval(conf_file)
 
     expanded_schema = expand(schema, config_rules)
     expanded_schema["entity_type_property"] = schema["meta"]["entity_type_property"]

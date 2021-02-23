@@ -31,6 +31,39 @@ class Projector(StarcoderObject, torch.nn.Module, metaclass=ABCMeta):
     def _forward(self, x: Tensor) -> Tensor: pass
 
 
+class NullProjector(Projector):
+
+    def __init__(self, entity_type_name, in_size, out_size, activation):
+        super(NullProjector, self).__init__(entity_type_name)
+        self.out_size = out_size
+
+    def _forward(self, x: Tensor) -> Tensor:
+        return torch.zeros(size=(x.shape[0], self.output_size), device=x.device)
+
+    def input_size(self) -> int:
+        return None
+
+    @property
+    def output_size(self) -> int:
+        return self.out_size
+
+
+class IdentityProjector(Projector):
+
+    def __init__(self, entity_type_name, in_size, out_size, activation):
+        super(IdentityProjector, self).__init__(entity_type_name)
+        self.out_size = out_size
+
+    def _forward(self, x: Tensor) -> Tensor:
+        return x
+
+    def input_size(self) -> int:
+        return None
+
+    def output_size(self) -> int:
+        return self.out_size
+
+
 class MLPProjector(Projector):
 
     def __init__(self, entity_type, in_size: int, out_size: int, activation):

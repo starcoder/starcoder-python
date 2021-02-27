@@ -162,182 +162,122 @@ def run_epoch(model,
             dev_loss.clone().detach().cpu(),
             )
 
-
-def apply_model(model, data, args, schema, ofd=None):
-    model.eval()
-    model.train(False)    
-    num_batches = data.num_entities // args.batch_size
-    num_batches = num_batches + 1 if num_batches * args.batch_size < data.num_entities else num_batches
-    ids = data.ids
-    batch_to_batch_ids = {
-        b : [
-            ids[i] for i in range(b * args.batch_size, (b + 1) * args.batch_size) if i < data.num_entities
-        ] for b in range(num_batches)
-    }
-    representation_storage = {}
-    bottleneck_storage = {}
-    logging.debug("Dataset has %d entities", data.num_entities)
-    try:        
-        for batch_num, batch_ids in batch_to_batch_ids.items():
-            representation_storage[batch_num] = tempfile.mkstemp(prefix="starcoder")[1]
-            bottleneck_storage[batch_num] = tempfile.mkstemp(prefix="starcoder")[1]
-            packed_batch_entities = [schema.pack(data.entity(i)) for i in batch_ids]
-            stacked_batch_entities = stack_entities(packed_batch_entities, data.schema.properties)
-            encoded_batch_entities = model.encode_properties(stacked_batch_entities)
-            entity_indices, property_indices, entity_property_indices = model.compute_indices(
-                stacked_batch_entities
-            )
-            encoded_entities = model.create_autoencoder_inputs(encoded_batch_entities, entity_indices)
-            bottlenecks, outputs = model.run_first_autoencoder_layer(encoded_entities)
-            torch.save((batch_ids, outputs, entity_indices), representation_storage[batch_num])
-            torch.save(bottlenecks, bottleneck_storage[batch_num])
-        for depth in range(1, model.depth + 1):
-            bottlenecks = {}
-            adjacencies = {}
-            bns = {}
-            for batch_num, batch_ids in batch_to_batch_ids.items():
-                for entity_type_name, bns in torch.load(bottleneck_storage[batch_num]).items():
-                    bottlenecks[entity_type_name] = bottlenecks.get(
-                        entity_type_name, 
-                        torch.zeros(size=(data.num_entities, model.bottleneck_size))
-                    )
-            for batch_num, batch_ids in batch_to_batch_ids.items():
-                entity_ids, ae_inputs, entity_indices = torch.load(
-                    representation_storage[batch_num]
-                )
-                bottlenecks, outputs = model.run_structured_autoencoder_layer(
-                    depth,
-                    ae_inputs,
-                    bottlenecks,
-                    adjacencies,
-                    {},
-                    entity_indices
-                )
-                torch.save((entity_ids, outputs, entity_indices), representation_storage[batch_num])
-                torch.save(bottlenecks, bottleneck_storage[batch_num])
-        for batch_num, b_ids in batch_to_batch_ids.items():
-            logging.debug("Saving batch %d with %d entities", batch_num, len(b_ids))
-            entity_ids, outputs, entity_indices = torch.load(representation_storage[batch_num])
-            bottlenecks = torch.load(bottleneck_storage[batch_num])
-            proj = torch.zeros(size=(len(b_ids), model.projected_size))                
-            decoded_properties = model.decode_properties(model.project_autoencoder_outputs(outputs))
-            decoded_entities = model.assemble_entities(decoded_properties, entity_indices)
-            decoded_properties = {
-                k : {
-                    kk : vv for kk, vv in v.items() if kk in data.schema.entity_types[k].properties
-                } for k, v in decoded_properties.items()
-            }
-            ordered_bottlenecks = {}
-            for entity_type, indices in entity_indices.items():
-                for i, index in enumerate(indices):
-                    ordered_bottlenecks[index.item()] = bottlenecks[entity_type][i]
-            for i, eid in enumerate(b_ids):
-                original_entity = data.entity(eid)                 
-                entity_type_name = original_entity[data.schema.entity_type_property.name]
-                entity_data_properties = data.schema.entity_types[entity_type_name].properties
-                reconstructed_entity = {data.schema.entity_type_property.name : entity_type_name}
-                for property_name in original_entity.keys():
-                    if property_name in entity_data_properties:
-                        reconstructed_entity[property_name] = decoded_entities[property_name][i].tolist()
-                reconstructed_entity = data.schema.unpack(reconstructed_entity)
-                entity = {"original" : original_entity,
-                          "reconstruction" : {k : v for k, v in reconstructed_entity.items() if k in original_entity},
-                          "bottleneck" : ordered_bottlenecks[i].tolist(),
-                }
-                if ofd:
-                    ofd.write(json.dumps(entity) + "\n")
-    except Exception as e:
-        raise e
-    finally:
-        for tfname in list(bottleneck_storage.values()) + list(representation_storage.values()):
-            try:
-                os.remove(tfname)
-            except Exception as e:
-                logging.info("Could not clean up temporary file: %s", tfname)
-                raise e
-
             
-def apply_model_cached(model, data, args, schema, ofd=None):
+def apply_model_with_cache(model, data, batch_size, use_gpu, ofd=None):
+    """
+    Ugly code to run an exact forward pass on large components by caching
+    intermediary representations and bottlenecks.
+    """
     model.eval()
     model.train(False)    
-    num_batches = data.num_entities // args.batch_size
-    num_batches = num_batches + 1 if num_batches * args.batch_size < data.num_entities else num_batches
+    num_batches = data.num_entities // batch_size
+    num_batches = num_batches + 1 if num_batches * batch_size < data.num_entities else num_batches
     ids = data.ids
     batch_to_batch_ids = {
         b : [
-            ids[i] for i in range(b * args.batch_size, (b + 1) * args.batch_size) if i < data.num_entities
+            (i, ids[i]) for i in range(b * batch_size, (b + 1) * batch_size) if i < data.num_entities
         ] for b in range(num_batches)
     }
     representation_storage = {}
     bottleneck_storage = {}
+
+    adjacencies = {}
+    entity_indices = {k : data.get_type_indices(k) for k in data.schema["entity_types"].keys()}
+    edges = data.edges
+    for rel_type, rel_spec in data.schema["relationships"].items():
+        source = rel_spec["source_entity_type"]
+        target = rel_spec["target_entity_type"]
+        adjacencies[rel_type] = torch.zeros(size=(len(entity_indices[source]), len(entity_indices[target])), dtype=bool)
+        for s, ts in edges[rel_type].items():
+            for t in ts:
+                ss = entity_indices[source].index(s)
+                tt = entity_indices[target].index(t)
+                adjacencies[rel_type][ss, tt] = True
     logging.debug("Dataset has %d entities", data.num_entities)
-    try:        
+    try:
         for batch_num, batch_ids in batch_to_batch_ids.items():
             representation_storage[batch_num] = tempfile.mkstemp(prefix="starcoder")[1]
             bottleneck_storage[batch_num] = tempfile.mkstemp(prefix="starcoder")[1]
-            packed_batch_entities = [schema.pack(data.entity(i)) for i in batch_ids]
-            stacked_batch_entities = stack_entities(packed_batch_entities, data.schema.properties)
-            encoded_batch_entities = model.encode_properties(stacked_batch_entities)
-            entity_indices, property_indices, entity_property_indices = model.compute_indices(
-                stacked_batch_entities
+            entities = [data.entity(i) for (_, i) in batch_ids]
+            entity_type_to_batch_indices, entity_type_to_property_indices, packed_properties = model.pack_properties(
+                entities
             )
-            encoded_entities = model.create_autoencoder_inputs(encoded_batch_entities, entity_indices)
-            bottlenecks, outputs = model.run_first_autoencoder_layer(encoded_entities)
-            torch.save((batch_ids, outputs, entity_indices), representation_storage[batch_num])
-            torch.save(bottlenecks, bottleneck_storage[batch_num])
+            encoded_properties = model.encode_properties(packed_properties)
+            encoded_entities = model.create_autoencoder_inputs(
+                encoded_properties,
+                entity_type_to_batch_indices,
+                entity_type_to_property_indices             
+            )
+            bottlenecks, autoencoder_output = model.run_autoencoder(
+                0,
+                encoded_entities
+            )
+            torch.save((entity_type_to_batch_indices, entity_type_to_property_indices, [autoencoder_output]), representation_storage[batch_num])
+            torch.save([bottlenecks], bottleneck_storage[batch_num])
         for depth in range(1, model.depth + 1):
-            bottlenecks = {}
-            adjacencies = {}
-            bns = {}
+            prev_bottleneck_list = []
+            ets = set()
+            for batch_num in batch_to_batch_ids.keys():
+                prev_bottleneck_list.append(torch.load(bottleneck_storage[batch_num])[-1])
+                for k in prev_bottleneck_list[0].keys():
+                    ets.add(k)
+            prev_bottlenecks = {k : torch.cat([x[k] for x in prev_bottleneck_list], 0) for k in ets}
             for batch_num, batch_ids in batch_to_batch_ids.items():
-                for entity_type_name, bns in torch.load(bottleneck_storage[batch_num]).items():
-                    bottlenecks[entity_type_name] = bottlenecks.get(
-                        entity_type_name, 
-                        torch.zeros(size=(data.num_entities, model.bottleneck_size))
-                    )
-            for batch_num, batch_ids in batch_to_batch_ids.items():
-                entity_ids, ae_inputs, entity_indices = torch.load(representation_storage[batch_num])
-                bottlenecks, outputs = model.run_structured_autoencoder_layer(
+                entity_type_to_batch_indices, entity_type_to_property_indices, prev_ae_outputs = torch.load(representation_storage[batch_num])
+                for rel_name, rel_spec in data.schema["relationships"].items():
+                    s_et = rel_spec["source_entity_type"]
+                    t_et = rel_spec["target_entity_type"]
+                    num_batch_src = len(entity_type_to_batch_indices[s_et])
+                    num_batch_tgt = len(entity_type_to_batch_indices[t_et])
+                    num_src_total = len(data.get_type_ids(s_et))
+                    num_tgt_total = len(data.get_type_ids(t_et))
+                adjacency_mappings = {et : [] for et in data.schema["entity_types"].keys()}
+                for _, bid in batch_ids:
+                    et, ep = data.get_entity_type_and_position(bid)
+                    adjacency_mappings[et].append(ep)
+                encoded_entities = model.create_structured_autoencoder_inputs(
                     depth,
-                    ae_inputs,
-                    bottlenecks,
+                    prev_ae_outputs[-1],
+                    prev_bottlenecks,
                     adjacencies,
-                    {},
-                    entity_indices
-                )                
-                torch.save((entity_ids, outputs, entity_indices), representation_storage[batch_num])
-                torch.save(bottlenecks, bottleneck_storage[batch_num])
-        for batch_num, b_ids in batch_to_batch_ids.items():
-            logging.debug("Saving batch %d with %d entities", batch_num, len(b_ids))
-            entity_ids, outputs, entity_indices = torch.load(representation_storage[batch_num])
-            bottlenecks = torch.load(bottleneck_storage[batch_num])
-            proj = torch.zeros(size=(len(b_ids), model.projected_size))                
-            decoded_properties = model.decode_properties(model.project_autoencoder_outputs(outputs))
-            decoded_entities = model.assemble_entities(decoded_properties, entity_indices)
-            decoded_properties = {
-                k : {
-                    kk : vv for kk, vv in v.items() if kk in data.schema.entity_types[k].properties
-                } for k, v in decoded_properties.items()
-            }
-            ordered_bottlenecks = {}
-            for entity_type, indices in entity_indices.items():
-                for i, index in enumerate(indices):
-                    ordered_bottlenecks[index.item()] = bottlenecks[entity_type][i]
-            for i, eid in enumerate(b_ids):
-                original_entity = data.entity(eid)                 
-                entity_type_name = original_entity[data.schema.entity_type_property.name]
-                entity_data_properties = data.schema.entity_types[entity_type_name].properties
-                reconstructed_entity = {data.schema.entity_type_property.name : entity_type_name}
-                for property_name in original_entity.keys():
-                    if property_name in entity_data_properties:
-                        reconstructed_entity[property_name] = decoded_entities[property_name][i].tolist()
-                reconstructed_entity = data.schema.unpack(reconstructed_entity)
-                entity = {"original" : original_entity,
-                          "reconstruction" : {k : v for k, v in reconstructed_entity.items() if k in original_entity},
-                          "bottleneck" : ordered_bottlenecks[i].tolist(),
-                }
-                if ofd:
-                    ofd.write(json.dumps(entity) + "\n")
+                    adjacency_mappings
+                )
+                bottlenecks, autoencoder_output = model.run_autoencoder(
+                    depth,
+                    encoded_entities
+                )
+                
+                torch.save((entity_type_to_batch_indices, entity_type_to_property_indices, prev_ae_outputs + [autoencoder_output]), representation_storage[batch_num])
+                torch.save(torch.load(bottleneck_storage[batch_num]) + [bottlenecks], bottleneck_storage[batch_num])
+
+        for batch_num, batch_ids in batch_to_batch_ids.items():
+            entity_type_to_batch_indices, entity_type_to_property_indices, prev_ae_outputs = torch.load(representation_storage[batch_num])
+            prev_bottleneck_list = []
+            ets = set()
+            for batch_num in batch_to_batch_ids.keys():
+                prev_bottleneck_list.append(torch.load(bottleneck_storage[batch_num])[-1])
+                for k in prev_bottleneck_list[0].keys():
+                    ets.add(k)
+            all_bottlenecks = {k : torch.cat([x[k] for x in prev_bottleneck_list], 0) for k in ets}
+            all_ae_outputs = {k : torch.cat([p[k] for p in prev_ae_outputs], 1) for k in prev_ae_outputs[0].keys()}
+            resized_encoded_entities = model.project_autoencoder_outputs(all_ae_outputs)
+            indices, decoded_properties = model.decode_properties(
+                resized_encoded_entities,
+                entity_type_to_batch_indices,
+                entity_type_to_property_indices
+            )
+            entities = [data.entity(i) for _, i in batch_ids]
+            reconstructions_by_id = model.reconstruct_entities(            
+                decoded_properties,
+                entities,
+                entity_type_to_batch_indices,
+            )
+            bottlenecks_by_id = model.assemble_bottlenecks(
+                {k : v for k, v in all_bottlenecks.items()},
+                entities,
+                entity_type_to_batch_indices
+            )
+            yield (entities, 0.0, reconstructions_by_id, bottlenecks_by_id)
     except Exception as e:
         raise e
     finally:

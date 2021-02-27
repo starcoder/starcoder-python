@@ -71,6 +71,18 @@ class Dataset(torch.utils.data.Dataset):
                 retval.append(i)
         return retval
 
+    def get_entity_type_and_position(self, eid):
+        e = self.entity(eid)
+        tp = e[self.schema["meta"]["entity_type_property"]]
+        return (tp, self.get_type_ids(tp).index(eid))
+    
+    def get_type_indices(self, *type_names):
+        retval = []
+        for idx, i in enumerate(self.ids):
+            if self.entity(i)[self.schema["entity_type_property"]] in type_names:
+                retval.append(idx)
+        return retval
+    
     def subselect_entities_by_id(self, ids, invert=False, strict=True):
         if invert:
             data = Dataset(

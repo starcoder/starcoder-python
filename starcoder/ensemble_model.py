@@ -325,7 +325,11 @@ class GraphAutoencoder(Ensemble):
                                              depth,
                                              prev_outputs,
                                              prev_bottlenecks,
-                                             adjacencies):
+                                             adjacencies,
+                                             adjacency_mappings=None):
+        if adjacency_mappings == None:
+            adjacency_mappings = {k : torch.arange(v.shape[0], dtype=int, device=self.device) for k, v in prev_outputs.items()}
+            
         autoencoder_inputs = {}
         for entity_type_name, prev_output in prev_outputs.items():
             entity_type = self.schema["entity_types"][entity_type_name]
@@ -336,42 +340,57 @@ class GraphAutoencoder(Ensemble):
                 if source == entity_type_name:
                     summarizer = self.relationship_target_summarizers[rel_name][depth - 1]
                     other = target
-                    rel_count = torch.cat([adjacencies[rel_name].sum(1), torch.tensor([0], dtype=adjacencies[rel_name].dtype, device=self.device)])
+                    #print("fwd", rel_name, adjacency_mappings[source], adjacencies[rel_name])
+                    rel_count = torch.cat(
+                        [
+                            adjacencies[rel_name][adjacency_mappings[source]].sum(1),
+                            torch.tensor([0], dtype=adjacencies[rel_name].dtype, device=self.device) # extra to avoid nan
+                        ]
+                    )
                     max_rel_count = rel_count.max()
-                    cur_ent_count = adjacencies[rel_name].shape[0]
+                    cur_ent_count = adjacencies[rel_name][adjacency_mappings[source]].shape[0]
                     related = torch.zeros(size=(cur_ent_count,
                                                 max_rel_count + 1, # extra to avoid nan
                                                 summarizer.input_size
                                                 ), device=self.device)
-                    for i in range(adjacencies[rel_name].shape[0]):
-                        related[i, :rel_count[i]] = prev_bottlenecks[other][adjacencies[rel_name][i, :]]
+                    #for i in range(adjacencies[rel_name][adjacency_mappings[source]].shape[0]):
+                    #    related[i, :rel_count[i]] = prev_bottlenecks[other][adjacencies[rel_name][adjacency_mappings[source]][i, :]]
                     autoencoder_inputs[entity_type_name].append(summarizer(related))
                 if rel_spec["target_entity_type"] == entity_type_name:
                     summarizer = self.relationship_source_summarizers[rel_name][depth - 1]
                     other = source
-                    rel_count = torch.cat([adjacencies[rel_name].sum(0), torch.tensor([0], dtype=adjacencies[rel_name].dtype, device=self.device)])
+                    #print("rev", rel_name, target, adjacency_mappings[target], adjacencies[rel_name])
+                    #print(source, adjacency_mappings[source])
+                    rel_count = torch.cat(
+                        [
+                            adjacencies[rel_name][:, adjacency_mappings[target]].sum(0),
+                            torch.tensor([0], dtype=adjacencies[rel_name].dtype, device=self.device) # extra to avoid nan
+                        ]
+                    )
                     max_rel_count = rel_count.max()
-                    cur_ent_count = adjacencies[rel_name].shape[1]
+                    cur_ent_count = adjacencies[rel_name][:, adjacency_mappings[target]].shape[1]
                     related = torch.zeros(size=(cur_ent_count,
                                                 max_rel_count + 1, # extra to avoid nan
                                                 summarizer.input_size
                                                 ), device=self.device)
-                    for i in range(adjacencies[rel_name].shape[1]):
-                        related[i, :rel_count[i]] = prev_bottlenecks[other][adjacencies[rel_name][:,i]]
+                    #print(other, rel_name, entity_type_name, max_rel_count, cur_ent_count, related.shape)
+                    #for i in range(adjacencies[rel_name][:, adjacency_mappings[target]].shape[1]):
+                    #    related[i, :rel_count[i]] = prev_bottlenecks[other][adjacencies[rel_name][:, adjacency_mappings[target]][:,i]]
                     autoencoder_inputs[entity_type_name].append(summarizer(related))
         autoencoder_inputs = {k : torch.cat(v, 1) for k, v in autoencoder_inputs.items()}
         return autoencoder_inputs
                     
     def project_autoencoder_outputs(self, autoencoder_outputs):
         resized_autoencoder_outputs = {}        
-        for entity_type_name, ae_output in autoencoder_outputs.items():            
-            resized_autoencoder_outputs[entity_type_name] = self.projectors[entity_type_name](ae_output)
+        for entity_type_name, ae_output in autoencoder_outputs.items():
             logger.debug(
-                "Projected autoencoder output for '%s' entities from %s to %s",
+                "Projecting autoencoder output for '%s' entities from %s to %s",
                 entity_type_name,
-                ae_output.shape,
-                resized_autoencoder_outputs[entity_type_name].shape
-            )
+                ae_output.shape[1],
+                self.projectors[entity_type_name].output_size
+                #resized_autoencoder_outputs[entity_type_name].shape
+            )            
+            resized_autoencoder_outputs[entity_type_name] = self.projectors[entity_type_name](ae_output)
         return resized_autoencoder_outputs
     
     def decode_properties(self, 
@@ -444,6 +463,105 @@ class GraphAutoencoder(Ensemble):
             ].to(self.device)
         return retval
 
+    def compute_relationship_losses(self, adjacencies, bottlenecks):
+        val = 0.0
+        for relationship_name, adj in adjacencies.items():
+            st = self.schema["relationships"][relationship_name]["source_entity_type"]
+            tt = self.schema["relationships"][relationship_name]["target_entity_type"]
+            det = self.relationship_detectors[relationship_name]
+            pos = torch.nonzero(adj)
+            neg = torch.nonzero(adj == False)
+            # will be problem for super-dense graphs...
+            neg = neg[torch.randint(neg.shape[0], size=(pos.shape[0],))]
+            pairs = torch.cat([pos, neg], 0)
+            x = torch.cat(
+                [
+                    torch.index_select(
+                        bottlenecks[st],
+                        0,
+                        pairs[:, 0]
+                    ),
+                    torch.index_select(
+                        bottlenecks[tt],
+                        0,
+                        pairs[:, 1]
+                    )
+                ],
+                1
+            )
+            y = torch.cat(
+                [
+                    torch.ones(size=(neg.shape[0],), dtype=torch.int64, device=self.device), 
+                    torch.zeros(size=(neg.shape[0],), dtype=torch.int64, device=self.device)
+                ], 
+                0
+            )
+            val += torch.nn.functional.cross_entropy(det(x), y, reduction="mean")
+        return val
+
+    def compute_property_losses(self, packed_entities, decoded_properties):
+        logger.debug("Started computing all losses")
+        losses_by_property = {}
+        for property_name, gold_values in packed_entities.items():
+            reconstructed_values = decoded_properties[property_name]
+            losses_by_property[property_name] = torch.nansum(
+                self.property_losses[property_name](
+                    reconstructed_values,
+                    gold_values
+                )
+            )
+        logger.debug("Finished computing all losses")
+
+        return torch.sum(torch.cat([torch.nansum(v).flatten() for k, v in losses_by_property.items()]))
+
+    def assemble_bottlenecks(self, bottlenecks, entities, entity_type_to_batch_indices):
+        bottlenecks_by_id = {}
+        #print({k : v.shape for k, v in bottlenecks.items()})
+        #print(entities)
+        for entity_type_name, bns in bottlenecks.items():
+            entity_indices = entity_type_to_batch_indices[entity_type_name][:, 1].cpu()
+            ids = [entities[i][self.schema["id_property"]] for i in entity_indices]
+            # strange how numpy.array can be a scalar here!
+            if isinstance(ids, str):
+                ids = [ids]
+            for i, bn in zip(ids, bns):
+                bottlenecks_by_id[i] = bn.cpu().detach().tolist()
+        return bottlenecks_by_id
+
+    # Recursively initialize model weights
+    def init_weights(m):
+        if type(m) == torch.nn.Linear or type(m) == torch.nn.Conv1d:
+            torch.nn.init.xavier_uniform_(m.weight)
+            m.bias.data.fill_(0.01)
+
+    # performance: cuda to cpu conversion
+    def reconstruct_entities(self, 
+                             decoded_properties, 
+                             entities, 
+                             entity_type_to_batch_indices, 
+    ):
+        retval = {}
+        entity_lookups = {
+            e : {
+                bi : ei for ei, bi in v.cpu().tolist()
+            } for e, v in entity_type_to_batch_indices.items()
+        }
+        for i, entity in enumerate(entities):
+            entity_type_name = entity[self.schema["entity_type_property"]]
+            reconstruction = {
+                self.schema["id_property"] : entity[self.schema["id_property"]],
+                self.schema["entity_type_property"] : entity[self.schema["entity_type_property"]],
+            }
+            for property_name in self.schema["entity_types"][
+                    reconstruction[self.schema["entity_type_property"]]]["properties"]:
+                reconstruction[property_name] = self.property_objects[property_name].unpack(
+                    self.property_losses[property_name].normalize(
+                        decoded_properties[property_name][entity_lookups[entity_type_name][i]].cpu().detach()
+                    )
+                )
+            retval[reconstruction[self.schema["id_property"]]] = reconstruction
+        return retval
+
     def _forward(self, entities, adjacencies):
         num_entities = len(entities)
         logger.debug("Starting forward pass with %d entities", num_entities)
@@ -452,7 +570,6 @@ class GraphAutoencoder(Ensemble):
         )
         adjacencies = self.prepare_adjacencies(adjacencies, entity_type_to_batch_indices)
         encoded_properties = self.encode_properties(packed_properties)
-        vv = sum([v.sum() for v in encoded_properties.values()])
         all_bottlenecks = {}
         all_ae_outputs = []        
         for depth in range(self.depth + 1):
@@ -507,100 +624,3 @@ class GraphAutoencoder(Ensemble):
         )
         logger.debug("Returning losses, reconstructions, and bottlenecks")
         return (entities, property_loss + relationship_loss, reconstructions_by_id, bottlenecks_by_id)
-
-    def compute_relationship_losses(self, adjacencies, bottlenecks):
-        val = 0.0
-        for relationship_name, adj in adjacencies.items():
-            st = self.schema["relationships"][relationship_name]["source_entity_type"]
-            tt = self.schema["relationships"][relationship_name]["target_entity_type"]
-            det = self.relationship_detectors[relationship_name]
-            pos = torch.nonzero(adj)
-            neg = torch.nonzero(adj == False)
-            # will be problem for super-dense graphs...
-            neg = neg[torch.randint(neg.shape[0], size=(pos.shape[0],))]
-            pairs = torch.cat([pos, neg], 0)
-            x = torch.cat(
-                [
-                    torch.index_select(
-                        bottlenecks[st],
-                        0,
-                        pairs[:, 0]
-                    ),
-                    torch.index_select(
-                        bottlenecks[tt],
-                        0,
-                        pairs[:, 1]
-                    )
-                ],
-                1
-            )
-            y = torch.cat(
-                [
-                    torch.ones(size=(neg.shape[0],), dtype=torch.int64, device=self.device), 
-                    torch.zeros(size=(neg.shape[0],), dtype=torch.int64, device=self.device)
-                ], 
-                0
-            )
-            val += torch.nn.functional.cross_entropy(det(x), y, reduction="mean")
-        return val
-
-    def compute_property_losses(self, packed_entities, decoded_properties):
-        logger.debug("Started computing all losses")
-        losses_by_property = {}
-        for property_name, gold_values in packed_entities.items():
-            reconstructed_values = decoded_properties[property_name]
-            losses_by_property[property_name] = torch.nansum(
-                self.property_losses[property_name](
-                    reconstructed_values,
-                    gold_values
-                )
-            )
-        logger.debug("Finished computing all losses")
-
-        return torch.sum(torch.cat([torch.nansum(v).flatten() for k, v in losses_by_property.items()]))
-
-    def assemble_bottlenecks(self, bottlenecks, entities, entity_type_to_batch_indices):
-        bottlenecks_by_id = {}
-        for entity_type_name, bns in bottlenecks.items():
-            entity_indices = entity_type_to_batch_indices[entity_type_name][:, 1].cpu()
-            ids = [entities[i][self.schema["id_property"]] for i in entity_indices]
-            # strange how numpy.array can be a scalar here!
-            if isinstance(ids, str):
-                ids = [ids]
-            for i, bn in zip(ids, bns):
-                bottlenecks_by_id[i] = bn.cpu().detach().tolist()
-        return bottlenecks_by_id
-
-    # Recursively initialize model weights
-    def init_weights(m):
-        if type(m) == torch.nn.Linear or type(m) == torch.nn.Conv1d:
-            torch.nn.init.xavier_uniform_(m.weight)
-            m.bias.data.fill_(0.01)
-
-    # performance: cuda to cpu conversion
-    def reconstruct_entities(self, 
-                             decoded_properties, 
-                             entities, 
-                             entity_type_to_batch_indices, 
-    ):
-        retval = {}
-        entity_lookups = {
-            e : {
-                bi : ei for ei, bi in v.cpu().tolist()
-            } for e, v in entity_type_to_batch_indices.items()
-        }
-        for i, entity in enumerate(entities):
-            entity_type_name = entity[self.schema["entity_type_property"]]
-            reconstruction = {
-                self.schema["id_property"] : entity[self.schema["id_property"]],
-                self.schema["entity_type_property"] : entity[self.schema["entity_type_property"]],
-            }
-            for property_name in self.schema["entity_types"][
-                    reconstruction[self.schema["entity_type_property"]]]["properties"]:
-                reconstruction[property_name] = self.property_objects[property_name].unpack(
-                    self.property_losses[property_name].normalize(
-                        decoded_properties[property_name][entity_lookups[entity_type_name][i]].cpu().detach()
-                    )
-                )
-            retval[reconstruction[self.schema["id_property"]]] = reconstruction
-        return retval

@@ -21,7 +21,7 @@ class Projector(StarcoderObject, torch.nn.Module, metaclass=ABCMeta):
     
     def __init__(self, entity_type_name) -> None:
         self.entity_type_name = entity_type_name
-        super(Projector, self).__init__()
+        super(Projector, self).__init__()        
 
     def forward(self, x:Tensor):
         with profiler.record_function("PROJECT {}".format(self.entity_type_name)):
@@ -30,6 +30,9 @@ class Projector(StarcoderObject, torch.nn.Module, metaclass=ABCMeta):
     @abstractmethod
     def _forward(self, x: Tensor) -> Tensor: pass
 
+    #@abstractproperty
+    #def output_size(self): pass
+    
 
 class NullProjector(Projector):
 
@@ -70,12 +73,16 @@ class MLPProjector(Projector):
         super(MLPProjector, self).__init__(entity_type)
         self.layer = torch.nn.Linear(in_size, out_size)
         self.activation = activation
-
+        self.out_size = out_size
+        self.in_size = in_size
+        
     def _forward(self, x: Tensor) -> Tensor:
         return self.activation(self.layer(x))
 
+    @property
     def input_size(self) -> int:
-        return cast(int, self.layer.in_size)
+        return self.in_size
 
-    def output_size(self) -> int:
-        return cast(int, self.layer.out_size)
+    @property
+    def output_size(self):
+        return self.out_size

@@ -173,7 +173,7 @@ class GraphAutoencoder(Ensemble):
             boundary_size = 0
             for ae in self.entity_autoencoders[entity_type_name]:
                 boundary_size += ae.output_size
-            projector_class = starport("starcoder.projector.NullProjector" if boundary_size == 0 else "starcoder.projector.IndentityProjector" if boundary_size == self.projected_size else self.schema["meta"]["projector"])
+            projector_class = starport("starcoder.projector.NullProjector" if boundary_size == 0 else "starcoder.projector.IdentityProjector" if boundary_size == self.projected_size else self.schema["meta"]["projector"])
             projectors[entity_type_name] = projector_class(entity_type_name, boundary_size, self.projected_size, activation)
             #if boundary_size not in [0, self.projected_size] else starcoder.projector.NullProjector(entity_type_name, self.projected_size)
         self.projectors = torch.nn.ModuleDict(projectors)

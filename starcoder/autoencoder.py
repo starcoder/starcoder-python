@@ -29,7 +29,7 @@ class Autoencoder(StarcoderObject, Module, metaclass=ABCMeta):
 
 class NullAutoencoder(Autoencoder):
 
-    def __init__(self, entity_type_name, depth):
+    def __init__(self, entity_type_name, depth, *argv, **args):
         super(NullAutoencoder, self).__init__(entity_type_name, depth, 0, 0, 0)
 
     def _forward(self, x):
@@ -53,12 +53,12 @@ class NullAutoencoder(Autoencoder):
 class IdentityAutoencoder(Autoencoder):
 
     def __init__(self, entity_type_name, depth, input_size, bottleneck_size, layer_sizes, activation):
-        super(BasicAutoencoder, self).__init__(
+        super(IdentityAutoencoder, self).__init__(
             entity_type_name,
             depth,
             input_size,
             bottleneck_size,
-            0 if input_size == 0 else layer_sizes[0]
+            input_size,
         )
 
     def _forward(self, x):

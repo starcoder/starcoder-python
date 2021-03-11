@@ -226,7 +226,7 @@ class GRUEncoder(PropertyEncoder):
         super(GRUEncoder, self).__init__(property)
         self.property = property
         es = args.get("embedding_size", 256)
-        hs = args.get("hidden_size", 640)
+        hs = args.get("hidden_size", 64)
         self._hidden_size = hs
         rnn_type = args.get("rnn_type", torch.nn.GRU)
         self.max_length = property.max_length
